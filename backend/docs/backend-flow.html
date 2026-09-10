@@ -1,0 +1,307 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Showcase Backend — Interactive Architecture</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #07100d;
+      --panel: #0d1915;
+      --panel-2: #12211b;
+      --line: #28443a;
+      --text: #e8f4ee;
+      --muted: #93aa9f;
+      --green: #57dc97;
+      --blue: #65b9ff;
+      --amber: #f7bd62;
+      --red: #ff7777;
+      --violet: #ba9cff;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; overflow: hidden; background: var(--bg); color: var(--text); font: 14px/1.5 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    button, input { font: inherit; }
+    .app { display: grid; grid-template-rows: auto 1fr; height: 100vh; }
+    header { display: flex; align-items: center; gap: 14px; min-height: 68px; padding: 12px 18px; border-bottom: 1px solid var(--line); background: rgba(7, 16, 13, .94); backdrop-filter: blur(14px); z-index: 5; }
+    .brand { min-width: 245px; }
+    .brand strong { display: block; font-size: 16px; letter-spacing: .01em; }
+    .brand span { color: var(--muted); font-size: 12px; }
+    .controls { display: flex; align-items: center; gap: 8px; flex: 1; flex-wrap: wrap; }
+    button, .search { border: 1px solid var(--line); border-radius: 9px; background: var(--panel); color: var(--text); }
+    button { padding: 8px 11px; cursor: pointer; transition: .18s ease; }
+    button:hover, button.active { border-color: var(--green); background: #173126; }
+    button[data-flow].active { box-shadow: 0 0 0 2px rgba(87, 220, 151, .18); }
+    .search { width: 200px; padding: 8px 11px; outline: none; }
+    .search:focus { border-color: var(--blue); }
+    .workspace { min-height: 0; display: grid; grid-template-columns: 1fr 340px; }
+    .stage { position: relative; min-width: 0; overflow: hidden; cursor: grab; background-image: radial-gradient(circle at 1px 1px, rgba(105, 164, 137, .17) 1px, transparent 0); background-size: 24px 24px; }
+    .stage.dragging { cursor: grabbing; }
+    #graph { width: 100%; height: 100%; user-select: none; }
+    .edge { fill: none; stroke: #355449; stroke-width: 2; opacity: .64; marker-end: url(#arrow); transition: opacity .2s, stroke .2s, stroke-width .2s; }
+    .edge.auth { stroke: #6d5a37; }
+    .edge.security { stroke: #3f5771; }
+    .edge.failure { stroke: #663e42; stroke-dasharray: 8 7; }
+    .edge.active { stroke: var(--green); stroke-width: 4; opacity: 1; stroke-dasharray: 10 7; animation: dash 650ms linear infinite; }
+    .edge.dimmed { opacity: .08; }
+    @keyframes dash { to { stroke-dashoffset: -17; } }
+    .node { cursor: pointer; transition: opacity .2s, filter .2s; }
+    .node rect { fill: #102019; stroke: #355448; stroke-width: 1.5; rx: 13; transition: .2s; }
+    .node text { pointer-events: none; }
+    .node .title { fill: var(--text); font-size: 15px; font-weight: 700; }
+    .node .subtitle { fill: var(--muted); font-size: 11px; }
+    .node .badge { font-size: 9px; font-weight: 800; letter-spacing: .08em; }
+    .node.creator rect, .node.visitor rect { stroke: var(--violet); }
+    .node.api rect { stroke: var(--blue); }
+    .node.auth rect { stroke: var(--amber); }
+    .node.security rect { stroke: #63aeee; }
+    .node.storage rect { stroke: #8dcf77; }
+    .node.failure rect { stroke: var(--red); }
+    .node.state rect { stroke: #65c9b0; fill: #0d2620; }
+    .node:hover rect, .node.selected rect { stroke-width: 3; filter: brightness(1.25); }
+    .node.active rect { stroke: var(--green); stroke-width: 4; filter: drop-shadow(0 0 12px rgba(87, 220, 151, .55)); }
+    .node.dimmed { opacity: .12; }
+    .lane-label { fill: #628074; font-size: 12px; font-weight: 800; letter-spacing: .14em; }
+    .lane-line { stroke: #193229; stroke-width: 1; stroke-dasharray: 5 8; }
+    aside { min-width: 0; overflow: auto; border-left: 1px solid var(--line); background: var(--panel); padding: 20px; }
+    aside h2 { margin: 4px 0 3px; font-size: 20px; }
+    aside .kind { color: var(--green); text-transform: uppercase; letter-spacing: .12em; font-size: 10px; font-weight: 800; }
+    aside p { color: #c2d2ca; }
+    aside ul { padding-left: 18px; color: #c2d2ca; }
+    aside li { margin: 7px 0; }
+    .code { display: block; overflow-wrap: anywhere; margin-top: 12px; padding: 10px; border-radius: 8px; background: #07110d; border: 1px solid #20382f; color: #9bd9bc; font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .legend { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; margin: 18px 0; }
+    .legend span { color: var(--muted); font-size: 11px; }
+    .dot { display: inline-block; width: 8px; height: 8px; margin-right: 6px; border-radius: 50%; }
+    .hint { position: absolute; left: 16px; bottom: 14px; padding: 7px 10px; border-radius: 8px; background: rgba(7, 16, 13, .84); border: 1px solid var(--line); color: var(--muted); pointer-events: none; }
+    .progress { position: absolute; top: 14px; left: 50%; transform: translateX(-50%); min-width: 310px; padding: 9px 13px; border: 1px solid var(--line); border-radius: 10px; background: rgba(7, 16, 13, .92); text-align: center; opacity: 0; transition: opacity .2s; pointer-events: none; }
+    .progress.visible { opacity: 1; }
+    .progress strong { color: var(--green); }
+    @media (max-width: 900px) {
+      .workspace { grid-template-columns: 1fr; }
+      aside { position: absolute; right: 0; bottom: 0; width: min(90vw, 340px); height: 48vh; border-top: 1px solid var(--line); box-shadow: -10px -10px 30px rgba(0,0,0,.25); }
+      .brand { min-width: auto; }
+      .brand span { display: none; }
+      header { align-items: flex-start; }
+    }
+  </style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <div class="brand"><strong>Showcase Backend Explorer</strong><span>Authentication · route policy · secure proxy</span></div>
+    <div class="controls">
+      <button data-flow="create">① Create</button>
+      <button data-flow="login">② Auto login</button>
+      <button data-flow="ready">③ Ready request</button>
+      <button data-flow="blocked">④ Blocked route</button>
+      <button data-flow="expired">⑤ Session expiry</button>
+      <button id="stop">Stop</button>
+      <button id="reset">Reset view</button>
+      <input id="search" class="search" type="search" placeholder="Find a component…" aria-label="Find a component">
+    </div>
+  </header>
+  <div class="workspace">
+    <main id="stage" class="stage">
+      <svg id="graph" role="img" aria-label="Interactive graph of the Showcase backend">
+        <defs>
+          <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="context-stroke"></path></marker>
+        </defs>
+        <g id="viewport"><g id="lanes"></g><g id="edges"></g><g id="nodes"></g></g>
+      </svg>
+      <div id="progress" class="progress"></div>
+      <div class="hint">Drag to pan · wheel to zoom · click a node for details</div>
+    </main>
+    <aside id="details">
+      <div class="kind">Interactive map</div>
+      <h2>How to explore</h2>
+      <p>Choose a numbered walkthrough to watch a request travel through the backend, or click any component in the graph.</p>
+      <div class="legend">
+        <span><i class="dot" style="background:var(--blue)"></i>API</span>
+        <span><i class="dot" style="background:var(--amber)"></i>Authentication</span>
+        <span><i class="dot" style="background:#63aeee"></i>Security</span>
+        <span><i class="dot" style="background:#8dcf77"></i>Storage</span>
+        <span><i class="dot" style="background:var(--red)"></i>Blocked/error</span>
+        <span><i class="dot" style="background:var(--green)"></i>State</span>
+      </div>
+      <p>The key idea: Playwright creates the authenticated session once. Normal visitor traffic uses the encrypted session through the HTTP proxy; no browser stays alive.</p>
+    </aside>
+  </div>
+</div>
+<script>
+  const nodes = [
+    { id:'creator', x:40,y:90,w:180,h:70,label:'Developer',sub:'Configures showcase',type:'creator',code:'POST /api/showcases',details:['Provides target URL, selected routes, and authentication configuration.','A slug is generated when omitted.','Username/password can arrive in the request but never enter plaintext configuration storage.'] },
+    { id:'visitor', x:40,y:420,w:180,h:70,label:'Visitor',sub:'Uses public showcase',type:'visitor',code:'GET /showcase/:slug/*',details:['Can request only configured showcase paths.','Cannot choose an upstream host or target URL.','Receives no target cookies, tokens, or credentials.'] },
+    { id:'creatorApi', x:290,y:80,w:210,h:85,label:'Creator API',sub:'Bearer-protected management',type:'api',code:'src/api/app.ts',details:['Create, get, patch, delete, and prepare endpoints.','Validates request schemas and returns creator-safe DTOs.','Creator preparation may explicitly retry authentication.'] },
+    { id:'publicApi', x:290,y:400,w:210,h:85,label:'Showcase API',sub:'Public read-only boundary',type:'api',code:'GET /showcase/:slug/*',details:['Only GET and HEAD reach the proxy.','POST, PUT, PATCH, DELETE, and OPTIONS return 405.','Route authorization happens before authentication is started.'] },
+    { id:'showcaseService', x:570,y:60,w:220,h:90,label:'Showcase Service',sub:'Configuration lifecycle',type:'service',code:'src/showcases/showcase-service.ts',details:['Normalizes routes and generates collision-resistant slugs.','Validates target/login URLs before persistence.','Encrypts authentication secrets before repository writes.'] },
+    { id:'routePolicy', x:570,y:255,w:220,h:90,label:'Route Policy',sub:'Explicit allowlist',type:'security',code:'src/showcases/route-policy.ts',details:['No discovery, crawling, or AI classification.','/projects allows /projects and /projects/42, not /projects-private.','Rejects dot segments, backslashes, control bytes, and repeatedly encoded traversal.'] },
+    { id:'method405', x:580,y:425,w:200,h:70,label:'405 Read-only',sub:'Unsafe method rejected',type:'failure',code:'UNSUPPORTED_APPLICATION',details:['Mutation requests stop here.','The target session and upstream application are never touched.'] },
+    { id:'notFound', x:580,y:520,w:200,h:70,label:'404 Not found',sub:'Route not configured',type:'failure',code:'NOT_FOUND',details:['Disallowed paths are indistinguishable from missing showcase paths.','No browser preparation and no upstream connection occurs.'] },
+    { id:'sessionCheck', x:860,y:280,w:210,h:90,label:'Session Check',sub:'Encrypted state + TTL',type:'auth',code:'AuthenticationService.activeMaterial()',details:['Checks for an unexpired encrypted session.','Decrypts state only inside the backend.','Expired state is deleted and marked AUTHENTICATION_EXPIRED.'] },
+    { id:'coordinator', x:860,y:410,w:210,h:90,label:'Preparation Lock',sub:'Single-flight per showcase',type:'auth',code:'src/sessions/preparation-coordinator.ts',details:['Concurrent visitors share one promise.','50 visitors produce one authentication operation and one browser.','A retry cooldown prevents endless authentication loops.'] },
+    { id:'registry', x:1130,y:410,w:205,h:90,label:'Auth Provider',sub:'Password · token · manual',type:'auth',code:'src/auth/providers.ts',details:['The remaining backend is provider-agnostic.','Token and manual sessions avoid Playwright.','Password authentication delegates to isolated Chromium.'] },
+    { id:'playwright', x:1395,y:400,w:220,h:100,label:'Playwright',sub:'Temporary Chromium bootstrap',type:'auth',code:'src/browser/playwright-bootstrapper.ts',details:['Opens the configured login URL and fills configured selectors.','All browser HTTP traffic is routed through the pinned secure client.','Service workers and WebSockets are blocked. Context and browser close in finally.'] },
+    { id:'verification', x:1395,y:535,w:220,h:100,label:'Login Verification',sub:'Click is never enough',type:'auth',code:'URL · selector · endpoint · absence',details:['Supports expected URL, visible selector, authenticated endpoint/status, or disappearing login selector.','A failed strategy produces AUTHENTICATION_FAILED.'] },
+    { id:'encryption', x:1130,y:690,w:205,h:90,label:'AES-256-GCM',sub:'Authenticated encryption',type:'security',code:'src/security/encryption.ts',details:['Encrypts creator credentials and captured session material.','Uses a 32-byte environment-supplied key and random nonce.','Tampered ciphertext fails authentication.'] },
+    { id:'repository', x:860,y:690,w:210,h:100,label:'PostgreSQL',sub:'Showcases · auth · sessions',type:'storage',code:'src/storage/postgres-repository.ts',details:['Stores users, showcase policy, encrypted auth config, encrypted sessions, and visits.','Target cookies and credentials exist only inside ciphertext columns.','Deleting a showcase cascades to its authentication and sessions.'] },
+    { id:'proxy', x:860,y:110,w:210,h:100,label:'Secure Proxy',sub:'Server-side authenticated GET',type:'service',code:'src/proxy/proxy-service.ts',details:['Builds the upstream URL from stored target plus the authorized path.','Strips visitor Cookie, Authorization, Host, Origin, Referer, forwarded, framing, and hop-by-hop headers.','Attaches target cookies/headers only on the server side.'] },
+    { id:'secureClient', x:1130,y:110,w:205,h:100,label:'Secure HTTP Client',sub:'Pinned destination',type:'security',code:'src/proxy/secure-http-client.ts',details:['Validates every connection and every redirect.','Pins the socket lookup to an already validated address.','Applies timeouts and maximum response sizes.'] },
+    { id:'targetPolicy', x:1395,y:105,w:220,h:110,label:'Target Security',sub:'SSRF prevention',type:'security',code:'src/security/target-policy.ts',details:['Allows only HTTP and HTTPS.','Validates every DNS answer, including IPv4-mapped IPv6.','Blocks loopback, private, link-local, multicast, reserved, metadata, and special-use destinations.'] },
+    { id:'target', x:1680,y:250,w:210,h:100,label:'Private Target App',sub:'Stored origin only',type:'target',code:'https://configured-target.example',details:['The visitor cannot supply this origin.','Receives authenticated cookies/headers from the backend.','Only explicitly permitted read-only paths are requested.'] },
+    { id:'expiry', x:1395,y:730,w:220,h:100,label:'Expiry Detection',sub:'401 · configured 403 · login',type:'failure',code:'AUTHENTICATION_EXPIRED',details:['Also supports a configured unauthenticated response marker.','Deletes the old session and transitions the showcase state.','Reauthentication is controlled and deduplicated.'] },
+    { id:'rewriter', x:1130,y:250,w:205,h:100,label:'Response Rewriter',sub:'Target-origin URLs only',type:'service',code:'src/proxy/content-rewriter.ts',details:['Rewrites HTML href/src/action/srcset and CSS url().','External origins remain untouched.','Set-Cookie, authentication, redirect, CSP, and hop-by-hop headers are removed or replaced.','Arbitrary JavaScript rewriting is intentionally unsupported.'] },
+    { id:'created', x:430,y:900,w:170,h:65,label:'CREATED',sub:'Configured, no session',type:'state',code:'ShowcaseState',details:['Initial state after showcase creation or configuration changes.'] },
+    { id:'preparing', x:660,y:900,w:170,h:65,label:'PREPARING',sub:'Authentication running',type:'state',code:'ShowcaseState',details:['Exactly one preparation operation owns this state for a showcase.'] },
+    { id:'active', x:890,y:900,w:170,h:65,label:'ACTIVE',sub:'Session available',type:'state',code:'ShowcaseState',details:['Visitor requests can use the secure proxy without Playwright.'] },
+    { id:'authExpired', x:1120,y:900,w:220,h:65,label:'AUTHENTICATION_EXPIRED',sub:'Session invalidated',type:'state',code:'ShowcaseState',details:['A subsequent controlled preparation can refresh the session.'] },
+    { id:'error', x:1400,y:900,w:170,h:65,label:'ERROR',sub:'Creator attention',type:'failure state',code:'ShowcaseState',details:['Automatic retries stop. A creator prepare or re-authenticate action is required.'] }
+  ];
+
+  const edges = [
+    ['creator','creatorApi','create / update / prepare',''], ['creatorApi','showcaseService','validated command',''],
+    ['showcaseService','routePolicy','normalize explicit routes','security'], ['showcaseService','targetPolicy','validate configured URLs','security'],
+    ['showcaseService','encryption','encrypt credentials','security'], ['showcaseService','repository','persist policy',''], ['repository','created','initial state',''],
+    ['visitor','publicApi','GET /showcase/:slug/path',''], ['publicApi','method405','unsafe method','failure'],
+    ['publicApi','routePolicy','normalize + authorize','security'], ['routePolicy','notFound','not allowlisted','failure'],
+    ['routePolicy','sessionCheck','allowed path',''], ['sessionCheck','proxy','valid session',''], ['sessionCheck','coordinator','missing / expired','auth'],
+    ['coordinator','preparing','set state','auth'], ['coordinator','registry','one preparation','auth'], ['registry','playwright','password provider','auth'],
+    ['playwright','secureClient','intercept every request','security'], ['secureClient','targetPolicy','resolve + validate + pin','security'],
+    ['targetPolicy','target','safe socket only','security'], ['target','secureClient','login/target response',''],
+    ['playwright','verification','verify authenticated state','auth'], ['verification','encryption','capture storage state','auth'],
+    ['encryption','repository','encrypted session only','security'], ['repository','active','set state',''], ['repository','sessionCheck','load encrypted state',''],
+    ['proxy','secureClient','server-side request','security'], ['secureClient','target','pinned HTTP(S)','security'],
+    ['secureClient','proxy','bounded response',''], ['proxy','expiry','auth failure signal','failure'], ['expiry','repository','delete session','failure'],
+    ['expiry','authExpired','set state','failure'], ['proxy','rewriter','safe response headers/body',''], ['rewriter','visitor','proxied HTML/CSS/assets',''],
+    ['verification','error','verification failed','failure'], ['authExpired','preparing','controlled refresh','auth'], ['preparing','active','success',''], ['preparing','error','failure','failure']
+  ].map(([from,to,label,type], index) => ({ id:`e${index}`,from,to,label,type }));
+
+  const flows = {
+    create: { title:'Create a selected-route showcase', steps:['creator','creatorApi','showcaseService','routePolicy','targetPolicy','encryption','repository','created'] },
+    login: { title:'First visitor triggers automatic password login', steps:['visitor','publicApi','routePolicy','sessionCheck','coordinator','preparing','registry','playwright','secureClient','targetPolicy','target','secureClient','playwright','verification','encryption','repository','active'] },
+    ready: { title:'Normal visitor request — Playwright is not running', steps:['visitor','publicApi','routePolicy','sessionCheck','repository','sessionCheck','proxy','secureClient','targetPolicy','target','secureClient','proxy','rewriter','visitor'] },
+    blocked: { title:'Unconfigured route is stopped before auth or proxy', steps:['visitor','publicApi','routePolicy','notFound'] },
+    expired: { title:'Target authentication expires and is invalidated', steps:['visitor','publicApi','routePolicy','sessionCheck','proxy','secureClient','target','secureClient','proxy','expiry','repository','authExpired'] }
+  };
+
+  const svg = document.getElementById('graph');
+  const viewport = document.getElementById('viewport');
+  const nodeLayer = document.getElementById('nodes');
+  const edgeLayer = document.getElementById('edges');
+  const laneLayer = document.getElementById('lanes');
+  const stage = document.getElementById('stage');
+  const details = document.getElementById('details');
+  const progress = document.getElementById('progress');
+  const byId = new Map(nodes.map(n => [n.id,n]));
+  let transform = { x: 30, y: 20, scale: .68 };
+  let drag = null;
+  let timer = null;
+
+  const ns = 'http://www.w3.org/2000/svg';
+  const make = (tag, attrs={}) => {
+    const element = document.createElementNS(ns, tag);
+    Object.entries(attrs).forEach(([key,value]) => element.setAttribute(key,String(value)));
+    return element;
+  };
+
+  function drawLanes() {
+    [['ENTRY POINTS',25],['POLICY + LIFECYCLE',550],['RUNTIME + AUTH',840],['EXTERNAL BOUNDARY',1660],['SHOWCASE STATE MACHINE',410]].forEach(([label,x], i) => {
+      if (i === 4) {
+        const line = make('line',{x1:380,y1:860,x2:1600,y2:860,class:'lane-line'}); laneLayer.appendChild(line);
+        const text = make('text',{x:410,y:845,class:'lane-label'}); text.textContent = label; laneLayer.appendChild(text); return;
+      }
+      const text = make('text',{x,y:35,class:'lane-label'}); text.textContent = label; laneLayer.appendChild(text);
+    });
+  }
+
+  function edgePath(a,b) {
+    const ax=a.x+a.w/2, ay=a.y+a.h/2, bx=b.x+b.w/2, by=b.y+b.h/2;
+    const dx=Math.max(55,Math.abs(bx-ax)*.45);
+    if (Math.abs(bx-ax) < 80) return `M ${ax} ${ay} C ${ax+90} ${ay}, ${bx+90} ${by}, ${bx} ${by}`;
+    return `M ${ax} ${ay} C ${ax+(bx>ax?dx:-dx)} ${ay}, ${bx-(bx>ax?dx:-dx)} ${by}, ${bx} ${by}`;
+  }
+
+  function drawEdges() {
+    edges.forEach(edge => {
+      const path=make('path',{id:edge.id,d:edgePath(byId.get(edge.from),byId.get(edge.to)),class:`edge ${edge.type}`,'data-from':edge.from,'data-to':edge.to});
+      const title=make('title'); title.textContent=edge.label; path.appendChild(title); edgeLayer.appendChild(path);
+    });
+  }
+
+  function drawNodes() {
+    nodes.forEach(node => {
+      const group=make('g',{class:`node ${node.type}`,transform:`translate(${node.x} ${node.y})`,'data-id':node.id,tabindex:'0',role:'button'});
+      group.appendChild(make('rect',{width:node.w,height:node.h}));
+      const badge=make('text',{x:14,y:18,class:'badge',fill:typeColor(node.type)}); badge.textContent=node.type.split(' ')[0].toUpperCase(); group.appendChild(badge);
+      const title=make('text',{x:14,y:43,class:'title'}); title.textContent=node.label; group.appendChild(title);
+      const subtitle=make('text',{x:14,y:node.h-14,class:'subtitle'}); subtitle.textContent=node.sub; group.appendChild(subtitle);
+      group.addEventListener('click',event => { event.stopPropagation(); showDetails(node); selectNode(node.id); });
+      group.addEventListener('keydown',event => { if(event.key==='Enter'||event.key===' '){event.preventDefault();showDetails(node);selectNode(node.id);} });
+      nodeLayer.appendChild(group);
+    });
+  }
+
+  function typeColor(type) {
+    if(type.includes('failure')) return '#ff7777';
+    return {api:'#65b9ff',auth:'#f7bd62',security:'#63aeee',storage:'#8dcf77',state:'#57dc97',creator:'#ba9cff',visitor:'#ba9cff'}[type] || '#93aa9f';
+  }
+
+  function showDetails(node) {
+    details.innerHTML=`<div class="kind">${escapeHtml(node.type)}</div><h2>${escapeHtml(node.label)}</h2><p>${escapeHtml(node.sub)}</p><ul>${node.details.map(item=>`<li>${escapeHtml(item)}</li>`).join('')}</ul><span class="code">${escapeHtml(node.code)}</span>`;
+  }
+
+  function escapeHtml(value) { return value.replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[char])); }
+  function applyTransform(){ viewport.setAttribute('transform',`translate(${transform.x} ${transform.y}) scale(${transform.scale})`); }
+  function selectNode(id){ document.querySelectorAll('.node').forEach(el=>el.classList.toggle('selected',el.dataset.id===id)); }
+  function clearActive(){ document.querySelectorAll('.active,.dimmed').forEach(el=>el.classList.remove('active','dimmed')); progress.classList.remove('visible'); }
+
+  function playFlow(name) {
+    stopFlow();
+    const flow=flows[name]; let index=0;
+    document.querySelectorAll('[data-flow]').forEach(button=>button.classList.toggle('active',button.dataset.flow===name));
+    const tick=()=>{
+      document.querySelectorAll('.node,.edge').forEach(el=>{el.classList.remove('active');el.classList.add('dimmed');});
+      const current=flow.steps[index], previous=flow.steps[index-1];
+      const node=document.querySelector(`.node[data-id="${current}"]`); node?.classList.remove('dimmed'); node?.classList.add('active');
+      flow.steps.slice(0,index).forEach(id=>document.querySelector(`.node[data-id="${id}"]`)?.classList.remove('dimmed'));
+      if(previous) document.querySelectorAll(`.edge[data-from="${previous}"][data-to="${current}"]`).forEach(edge=>{edge.classList.remove('dimmed');edge.classList.add('active');});
+      progress.innerHTML=`<strong>${index+1}/${flow.steps.length}</strong> · ${escapeHtml(flow.title)} · ${escapeHtml(byId.get(current).label)}`; progress.classList.add('visible');
+      showDetails(byId.get(current));
+      index+=1;
+      if(index>=flow.steps.length){clearInterval(timer);timer=null;}
+    };
+    tick(); timer=setInterval(tick,820);
+  }
+
+  function stopFlow(){ if(timer)clearInterval(timer);timer=null;clearActive();document.querySelectorAll('[data-flow]').forEach(button=>button.classList.remove('active')); }
+  function fitView(){
+    const scale=Math.max(.32,Math.min(1,(stage.clientWidth-60)/1940,(stage.clientHeight-60)/1010));
+    transform={x:30,y:25,scale}; applyTransform();
+  }
+  function resetView(){ stopFlow();fitView();document.getElementById('search').value='';filterNodes(''); }
+  function filterNodes(term){
+    const query=term.trim().toLowerCase();
+    nodes.forEach(node=>{
+      const match=!query||`${node.label} ${node.sub} ${node.code} ${node.details.join(' ')}`.toLowerCase().includes(query);
+      document.querySelector(`.node[data-id="${node.id}"]`)?.classList.toggle('dimmed',!match);
+    });
+    edges.forEach(edge=>{
+      const from=document.querySelector(`.node[data-id="${edge.from}"]`),to=document.querySelector(`.node[data-id="${edge.to}"]`);
+      document.getElementById(edge.id)?.classList.toggle('dimmed',from?.classList.contains('dimmed')||to?.classList.contains('dimmed'));
+    });
+  }
+
+  stage.addEventListener('pointerdown',event=>{if(event.target.closest('.node'))return;drag={x:event.clientX,y:event.clientY,tx:transform.x,ty:transform.y};stage.setPointerCapture(event.pointerId);stage.classList.add('dragging');});
+  stage.addEventListener('pointermove',event=>{if(!drag)return;transform.x=drag.tx+event.clientX-drag.x;transform.y=drag.ty+event.clientY-drag.y;applyTransform();});
+  stage.addEventListener('pointerup',()=>{drag=null;stage.classList.remove('dragging');});
+  stage.addEventListener('wheel',event=>{event.preventDefault();const next=Math.min(1.6,Math.max(.32,transform.scale*(event.deltaY<0?1.1:.9)));const rect=svg.getBoundingClientRect();const px=event.clientX-rect.left,py=event.clientY-rect.top;transform.x=px-(px-transform.x)*(next/transform.scale);transform.y=py-(py-transform.y)*(next/transform.scale);transform.scale=next;applyTransform();},{passive:false});
+  document.querySelectorAll('[data-flow]').forEach(button=>button.addEventListener('click',()=>playFlow(button.dataset.flow)));
+  document.getElementById('stop').addEventListener('click',stopFlow);
+  document.getElementById('reset').addEventListener('click',resetView);
+  document.getElementById('search').addEventListener('input',event=>{stopFlow();filterNodes(event.target.value);});
+  svg.addEventListener('click',()=>selectNode(''));
+
+  drawLanes(); drawEdges(); drawNodes(); fitView();
+</script>
+</body>
+</html>

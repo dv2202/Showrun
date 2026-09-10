@@ -1,0 +1,42 @@
+# Dependencies
+node_modules/
+
+# Build output and framework caches
+.next/
+dist/
+build/
+out/
+coverage/
+*.tsbuildinfo
+next-env.d.ts
+
+# Local environment files and secrets
+.env
+.env.*
+!.env.example
+!.env.*.example
+*.local
+
+# Test and browser artifacts
+playwright-report/
+test-results/
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Hosting and tooling state
+.vercel/
+.turbo/
+.cache/
+
+# Editors and operating systems
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+*~
