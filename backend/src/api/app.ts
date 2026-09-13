@@ -102,7 +102,7 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
     } else {
       appError = asAppError(error);
     }
-    request.log.error({ code: appError.code, errorName: error instanceof Error ? error.name : 'UnknownError' }, appError.publicMessage);
+    request.log.error({ code: appError.code, err: error }, appError.publicMessage);
     await reply.code(appError.statusCode).send({
       error: { code: appError.code, message: appError.publicMessage },
     });

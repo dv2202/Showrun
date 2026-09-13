@@ -69,6 +69,7 @@ export const updateShowcaseSchema = z.object({
   name: z.string().trim().min(1).max(120).optional(),
   slug: z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/).max(80).optional(),
   targetUrl: z.string().url().optional(),
+  mode: z.enum(['selected_routes', 'full_application']).optional(),
   routes: z.array(showcaseRouteSchema).min(1).max(50).optional(),
   authentication: authenticationInputSchema.optional(),
 }).refine((value) => Object.keys(value).length > 0, 'At least one field is required');

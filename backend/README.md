@@ -18,16 +18,21 @@ Open [`docs/backend-flow.html`](docs/backend-flow.html) in a browser for an inte
 
 ## Setup
 
-Requirements: Node.js 22+, PostgreSQL, and a Chromium build for password authentication.
+Requirements: Node.js 22+ and PostgreSQL. `npm install` automatically installs the Playwright-managed
+Chromium build for the current operating system.
 
 ```bash
 cp .env.example .env
 npm install
-npm run playwright:install
 npm run db:migrate
 npm run build
 npm start
 ```
+
+Production deployments should build `backend/Dockerfile`. It installs the Chromium version matching
+`package-lock.json` together with the required Linux libraries and runs the API as the non-root
+`node` user. `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH` is only an optional override for exceptional
+environments; normal local and container execution uses Playwright's managed browser automatically.
 
 Generate `ENCRYPTION_KEY` with `openssl rand -base64 32` and keep it in a secret manager, never source control. Terminate TLS at a trusted ingress; creator credentials must never cross plaintext transport.
 

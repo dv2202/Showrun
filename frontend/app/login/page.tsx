@@ -19,6 +19,7 @@ function LoginForm() {
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -65,6 +66,14 @@ function LoginForm() {
     }
     if (!password) {
       setError("Enter your password.");
+      return;
+    }
+    if (mode === "register" && !confirmPassword) {
+      setError("Confirm your password.");
+      return;
+    }
+    if (mode === "register" && password !== confirmPassword) {
+      setError("Passwords do not match.");
       return;
     }
 
@@ -223,6 +232,19 @@ function LoginForm() {
                   value={password}
                 />
               </label>
+              {mode === "register" && (
+                <label className="block">
+                  <span className="mb-2 block text-xs font-semibold">Confirm password</span>
+                  <input
+                    autoComplete="new-password"
+                    className={inputClass}
+                    onChange={(event) => setConfirmPassword(event.target.value)}
+                    placeholder="Enter your password again"
+                    type={showPassword ? "text" : "password"}
+                    value={confirmPassword}
+                  />
+                </label>
+              )}
 
               {(error || externalError) && (
                 <div
@@ -252,6 +274,7 @@ function LoginForm() {
                 className="font-semibold text-black hover:underline"
                 onClick={() => {
                   setMode((current) => (current === "login" ? "register" : "login"));
+                  setConfirmPassword("");
                   setError(null);
                 }}
                 type="button"

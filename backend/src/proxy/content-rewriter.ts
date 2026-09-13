@@ -27,6 +27,7 @@ function proxiedUrl(
     const prefix = publicProxyPrefix.replace(/\/$/, '');
     return `${prefix}/${encodeURIComponent(slug)}${resolved.pathname}${resolved.search}${resolved.hash}`;
   } catch {
+    console.warn(`Failed to resolve URL ${value} relative to ${documentUrl.href}`);
     return null;
   }
 }

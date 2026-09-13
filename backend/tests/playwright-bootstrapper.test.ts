@@ -82,8 +82,37 @@ describe('Playwright password authentication', () => {
       submitSelector: 'button[type=submit]',
       verification: { type: 'expected_selector', selector: '[data-user-menu]' },
     }, { username: 'developer@example.com', password: 'wrong-password' }))
-      .rejects.toMatchObject({ code: 'AUTHENTICATION_FAILED' });
+      .rejects.toMatchObject({
+        code: 'AUTHENTICATION_FAILED',
+        publicMessage: 'Login completed, but authentication could not be verified',
+      });
     expect(fake.contextClose).toHaveBeenCalledOnce();
     expect(fake.browserClose).toHaveBeenCalledOnce();
+  });
+
+  it('reports a browser installation or launch failure explicitly', async () => {
+    const policy = publicPolicy();
+    const launch = vi.fn(async () => {
+      throw new Error('Executable does not exist');
+    });
+    const bootstrapper = new PlaywrightBootstrapper(
+      policy,
+      new SecureHttpClient(policy, 1000, 100_000),
+      true,
+      undefined,
+      { launch } as unknown as Pick<BrowserType, 'launch'>,
+    );
+
+    await expect(bootstrapper.authenticate({
+      loginUrl: 'https://login.test/login',
+      usernameSelector: '#username',
+      passwordSelector: '#password',
+      submitSelector: 'button[type=submit]',
+      verification: { type: 'expected_selector', selector: '[data-user-menu]' },
+    }, { username: 'developer@example.com', password: 'private-password' }))
+      .rejects.toMatchObject({
+        code: 'AUTHENTICATION_FAILED',
+        publicMessage: 'Authentication browser could not be started',
+      });
   });
 });

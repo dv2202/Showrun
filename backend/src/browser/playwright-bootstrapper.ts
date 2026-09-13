@@ -1,4 +1,4 @@
-import { chromium, type BrowserContext, type Route } from 'playwright';
+import { chromium, type Browser, type BrowserContext, type Route } from 'playwright';
 import { AppError } from '../errors.js';
 import type { SessionMaterial, VerificationStrategy } from '../domain/types.js';
 import { SecureHttpClient } from '../proxy/secure-http-client.js';
@@ -87,12 +87,15 @@ export class PlaywrightBootstrapper {
 
   async authenticate(config: PasswordBootstrapConfig, secret: PasswordSecret): Promise<SessionMaterial> {
     await this.policy.validate(config.loginUrl);
-    const browser = await this.launcher.launch({
-      headless: this.headless,
-      ...(this.executablePath ? { executablePath: this.executablePath } : {}),
-    });
+    let browser: Browser | undefined;
     let context: BrowserContext | undefined;
+    let stageMessage = 'Authentication browser could not be started';
     try {
+      browser = await this.launcher.launch({
+        headless: this.headless,
+        ...(this.executablePath ? { executablePath: this.executablePath } : {}),
+      });
+      stageMessage = 'Authentication browser context could not be created';
       context = await browser.newContext({ serviceWorkers: 'block' });
       await context.route('**/*', (route) => this.fulfillSecurely(context!, route));
       if ('routeWebSocket' in context) {
@@ -100,20 +103,26 @@ export class PlaywrightBootstrapper {
       }
       const page = await context.newPage();
       const timeout = config.timeoutMs ?? 30_000;
+      stageMessage = 'Login page could not be loaded';
       await page.goto(config.loginUrl, { waitUntil: 'domcontentloaded', timeout });
+      stageMessage = 'Username field was not found or could not be filled';
       await page.locator(config.usernameSelector).fill(secret.username, { timeout });
+      stageMessage = 'Password field was not found or could not be filled';
       await page.locator(config.passwordSelector).fill(secret.password, { timeout });
+      stageMessage = 'Login submit control was not found or could not be activated';
       await page.locator(config.submitSelector).click({ timeout });
+      stageMessage = 'Login completed, but authentication could not be verified';
       await this.verify(page, config.verification, timeout);
+      stageMessage = 'Authenticated session could not be captured';
       return (await context.storageState()) as SessionMaterial;
     } catch (error) {
       if (error instanceof AppError) throw error;
-      throw new AppError('AUTHENTICATION_FAILED', 'Authentication could not be completed', 422, {
+      throw new AppError('AUTHENTICATION_FAILED', stageMessage, 422, {
         cause: error,
       });
     } finally {
       await context?.close().catch(() => undefined);
-      await browser.close().catch(() => undefined);
+      await browser?.close().catch(() => undefined);
     }
   }
 

@@ -84,6 +84,32 @@ describe('showcase API and authentication lifecycle', () => {
     await app.close();
   });
 
+  it('updates a showcase mode and configured routes', async () => {
+    const repository = new MemoryShowcaseRepository();
+    const app = await buildApp({ config: testConfig(), repository, policy: publicPolicy() });
+    const headers = await authenticatedHeaders(app);
+    const created = await app.inject({ method: 'POST', url: '/api/showcases', headers, payload: createPayload });
+    const routes = [
+      { path: '/reports', title: 'Reports', description: 'Reporting workspace' },
+      { path: '/settings', title: 'Settings', description: 'Workspace settings' },
+    ];
+
+    const updated = await app.inject({
+      method: 'PATCH',
+      url: `/api/showcases/${created.json().id}`,
+      headers,
+      payload: { mode: 'full_application', routes },
+    });
+
+    expect(updated.statusCode).toBe(200);
+    expect(updated.json()).toMatchObject({ mode: 'full_application', routes });
+    expect((await repository.getShowcaseById(created.json().id))?.showcase).toMatchObject({
+      mode: 'full_application',
+      routes,
+    });
+    await app.close();
+  });
+
   it('supports creator preparation and deletion', async () => {
     const app = await buildApp({ config: testConfig(), repository: new MemoryShowcaseRepository(), policy: publicPolicy() });
     const headers = await authenticatedHeaders(app);

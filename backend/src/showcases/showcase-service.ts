@@ -25,6 +25,7 @@ export interface UpdateShowcaseInput {
   name?: string;
   slug?: string;
   targetUrl?: string;
+  mode?: 'selected_routes' | 'full_application';
   routes?: ShowcaseRoute[];
   authentication?: AuthenticationInput;
 }
@@ -133,6 +134,7 @@ export class ShowcaseService {
       patch.lastErrorCode = null;
       invalidateSession = true;
     }
+    if (input.mode !== undefined) patch.mode = input.mode;
     if (input.routes !== undefined) patch.routes = this.normalizeRoutes(input.routes);
     try {
       await this.repository.updateShowcase(id, patch);

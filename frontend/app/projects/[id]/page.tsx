@@ -93,6 +93,12 @@ export default function ProjectDetail() {
         <div className="flex flex-wrap gap-2">
           <CopyButton value={publicUrl} />
           <Link
+            className="inline-flex h-9 items-center gap-2 border border-black/15 bg-white px-4 text-xs font-semibold transition hover:border-black"
+            href={`/projects/${project.id}/edit`}
+          >
+            <Icon name="settings" /> Edit showcase
+          </Link>
+          <Link
             className="inline-flex h-9 items-center gap-2 bg-ink px-4 text-xs font-semibold text-white transition hover:bg-zinc-700"
             href={`/showcase/${project.slug}`}
           >

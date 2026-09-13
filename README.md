@@ -17,7 +17,7 @@ the backend enforces route policy and read-only methods.
 - Node.js 22 or newer
 - npm
 - PostgreSQL
-- Chromium for password-based authentication (installed through Playwright)
+- Docker for the production-style backend image, or a local Playwright Chromium installation
 
 ## Installation
 
@@ -37,14 +37,22 @@ Create the local environment file:
 cp backend/.env.example backend/.env
 ```
 
-Set `DATABASE_URL` and generate an encryption key with `openssl rand -base64 32`. Then install Chromium and migrate the database:
+Set `DATABASE_URL` and generate an encryption key with `openssl rand -base64 32`. Installing the
+backend packages automatically downloads the correct Chromium build for the developer's operating
+system. Then migrate the database:
 
 `frontend/.env`'s `BACKEND_URL` only tells Next.js where to proxy API requests. The backend loads
 `DATABASE_URL` and `ENCRYPTION_KEY` from `backend/.env` when running development and migrations.
 
 ```bash
-npm --prefix backend run playwright:install
 npm --prefix backend run db:migrate
+```
+
+For deployment, build the backend image from the repository root. Chromium and its required Linux
+libraries are installed inside the image; no host Chrome path is required:
+
+```bash
+docker build -f backend/Dockerfile -t showrun-backend backend
 ```
 
 The default backend address is `http://127.0.0.1:4000`. Creator endpoints require the HttpOnly session cookie issued after email or OAuth login.

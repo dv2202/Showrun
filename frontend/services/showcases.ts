@@ -137,6 +137,7 @@ export async function updateShowcase(
   const payload: Record<string, unknown> = {};
   if (input.name !== undefined) payload.name = input.name;
   if (input.targetUrl !== undefined) payload.targetUrl = input.targetUrl;
+  if (input.mode !== undefined) payload.mode = input.mode;
   if (input.routes !== undefined) {
     payload.routes = input.routes.map(({ path, title, description }) => ({
       path,
