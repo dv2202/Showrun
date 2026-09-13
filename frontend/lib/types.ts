@@ -18,10 +18,7 @@ export interface Showcase {
   authMethod: AuthMethod;
   status: ShowcaseStatus;
   lastAuthenticated: string;
-  visitors: number;
   createdAt: string;
-  accent: string;
-  creator?: string;
   mode: ShowcaseMode;
   routes: ShowcaseRoute[];
 }
@@ -33,10 +30,15 @@ export interface CreateShowcaseInput {
     username: string;
     password: string;
   };
+  login: {
+    loginUrl: string;
+    usernameSelector: string;
+    passwordSelector: string;
+    submitSelector: string;
+    authenticatedSelector: string;
+  };
   mode: ShowcaseMode;
   routes: ShowcaseRoute[];
-  accent: string;
-  creator?: string;
 }
 
 export type PrepareState =

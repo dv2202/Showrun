@@ -8,6 +8,7 @@ export const errorCodes = [
   'PROXY_ERROR',
   'NOT_FOUND',
   'UNAUTHORIZED',
+  'AUTH_PROVIDER_UNAVAILABLE',
   'CONFLICT',
   'VALIDATION_ERROR',
 ] as const;

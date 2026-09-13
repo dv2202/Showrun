@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import { DashboardShell } from "@/components/shell";
+import { useAuth } from "@/components/auth-provider";
 import { CopyButton, Icon, Skeleton, Status } from "@/components/ui";
 import type { Showcase } from "@/lib/types";
 import { getShowcase } from "@/services/showcases";
@@ -11,9 +12,12 @@ import { getShowcase } from "@/services/showcases";
 export default function ProjectDetail() {
   const { id } = useParams<{ id: string }>();
   const [project, setProject] = useState<Showcase | null | undefined>();
+  const { user } = useAuth();
 
   useEffect(() => {
-    getShowcase(id).then((result) => setProject(result ?? null));
+    getShowcase(id)
+      .then((result) => setProject(result ?? null))
+      .catch(() => setProject(null));
   }, [id]);
 
   if (project === undefined) {
@@ -44,7 +48,9 @@ export default function ProjectDetail() {
               <Icon name="warning" />
             </span>
             <h1 className="mt-5 text-xl font-semibold">Showcase not found</h1>
-            <p className="mt-2 text-sm text-zinc-500">This mock project is no longer available.</p>
+            <p className="mt-2 text-sm text-zinc-500">
+              This project does not exist or is not available to your account.
+            </p>
             <Link
               className="mt-6 inline-flex h-10 items-center bg-ink px-4 text-xs font-semibold text-white"
               href="/dashboard"
@@ -57,7 +63,7 @@ export default function ProjectDetail() {
     );
   }
 
-  const publicUrl = `https://showcase.app/devansh/${project.slug}`;
+  const publicUrl = `/showcase/${project.slug}`;
   const authName =
     project.authMethod === "password"
       ? "Username + Password"
@@ -103,8 +109,10 @@ export default function ProjectDetail() {
           <p className="mt-2 truncate font-mono text-xs">{publicUrl}</p>
         </div>
         <div className="flex items-center gap-2 text-xs text-zinc-500">
-          <span className="h-2 w-2 rounded-full bg-emerald-500" />
-          Available publicly
+          <span
+            className={`h-2 w-2 rounded-full ${project.status === "active" ? "bg-emerald-500" : "bg-amber-500"}`}
+          />
+          {project.status === "active" ? "Available publicly" : "Authentication required"}
         </div>
       </div>
 
@@ -116,7 +124,6 @@ export default function ProjectDetail() {
                 <Icon className="h-4 w-4 text-zinc-400" name="key" />
                 <h2 className="text-sm font-semibold">Authentication</h2>
               </div>
-              <span className="font-mono text-[10px] text-zinc-400">AUTH-01</span>
             </div>
             <div className="grid sm:grid-cols-3">
               {[
@@ -141,67 +148,11 @@ export default function ProjectDetail() {
               </p>
               <Link
                 className="inline-flex h-9 items-center gap-2 border border-black/15 bg-white px-3 text-xs font-semibold transition hover:border-black"
-                href="/auth/setup"
+                href={`/auth/setup?id=${encodeURIComponent(project.id)}`}
               >
                 <Icon name="key" />
                 Re-authenticate
               </Link>
-            </div>
-          </section>
-
-          <section className="border border-black/10 bg-white" id="activity">
-            <div className="flex items-center justify-between border-b border-black/10 px-5 py-4">
-              <div className="flex items-center gap-2">
-                <Icon className="h-4 w-4 text-zinc-400" name="pulse" />
-                <h2 className="text-sm font-semibold">Recent activity</h2>
-              </div>
-              <button
-                className="text-[11px] font-medium text-zinc-400 hover:text-black"
-                type="button"
-              >
-                View history
-              </button>
-            </div>
-            <div className="divide-y divide-black/10">
-              <div className="flex gap-4 p-5">
-                <span className="grid h-8 w-8 shrink-0 place-items-center bg-emerald-50 text-emerald-700">
-                  <Icon className="h-4 w-4" name="external" />
-                </span>
-                <div className="flex-1">
-                  <p className="text-xs">
-                    <strong>Public showcase opened</strong> from a shared link
-                  </p>
-                  <p className="mt-1.5 text-[11px] text-zinc-400">
-                    Today, 10:14 · Anonymous visitor
-                  </p>
-                </div>
-              </div>
-              <div className="flex gap-4 p-5">
-                <span className="grid h-8 w-8 shrink-0 place-items-center bg-zinc-100 text-zinc-600">
-                  <Icon className="h-4 w-4" name="check" />
-                </span>
-                <div className="flex-1">
-                  <p className="text-xs">
-                    <strong>Authentication session refreshed</strong>
-                  </p>
-                  <p className="mt-1.5 text-[11px] text-zinc-400">
-                    {project.lastAuthenticated} · Devansh Shah
-                  </p>
-                </div>
-              </div>
-              <div className="flex gap-4 p-5">
-                <span className="grid h-8 w-8 shrink-0 place-items-center bg-zinc-100 text-zinc-600">
-                  <Icon className="h-4 w-4" name="spark" />
-                </span>
-                <div className="flex-1">
-                  <p className="text-xs">
-                    <strong>Showcase created</strong>
-                  </p>
-                  <p className="mt-1.5 text-[11px] text-zinc-400">
-                    {project.createdAt} · Devansh Shah
-                  </p>
-                </div>
-              </div>
             </div>
           </section>
         </div>
@@ -216,7 +167,6 @@ export default function ProjectDetail() {
             </div>
             <dl className="divide-y divide-black/10">
               {[
-                { label: "Visitors", value: project.visitors.toLocaleString() },
                 { label: "Created", value: project.createdAt },
                 {
                   label: "Mode",
@@ -242,8 +192,8 @@ export default function ProjectDetail() {
             </div>
             <dl className="divide-y divide-white/10">
               {[
-                { label: "Target", value: project.targetUrl.replace("https://", "") },
-                { label: "Creator", value: project.creator ?? "Not shown" },
+                { label: "Target", value: project.targetUrl.replace(/^https?:\/\//, "") },
+                { label: "Creator", value: user?.name ?? "Workspace owner" },
                 { label: "Project ID", value: project.id },
               ].map((row) => (
                 <div className="px-5 py-4" key={row.label}>

@@ -8,6 +8,8 @@ import type {
   ShowcaseState,
   StoredSession,
   User,
+  CreatorProvider,
+  CreatorSession,
 } from '../domain/types.js';
 
 export interface CreateShowcaseRecord {
@@ -27,7 +29,18 @@ export interface SaveAuthenticationRecord {
 }
 
 export interface ShowcaseRepository {
-  ensureUser(id: string, email: string): Promise<User>;
+  createPasswordUser(email: string, name: string, passwordHash: string): Promise<User | null>;
+  findUserByEmail(email: string): Promise<User | null>;
+  upsertOAuthUser(input: {
+    provider: CreatorProvider;
+    providerAccountId: string;
+    email: string;
+    name: string | null;
+    avatarUrl: string | null;
+  }): Promise<User>;
+  createCreatorSession(tokenHash: string, userId: string, expiresAt: Date): Promise<CreatorSession>;
+  getUserByCreatorSession(tokenHash: string, now: Date): Promise<User | null>;
+  deleteCreatorSession(tokenHash: string): Promise<void>;
   createShowcase(input: CreateShowcaseRecord): Promise<Showcase>;
   listShowcases(userId: string): Promise<Showcase[]>;
   getShowcaseById(id: string): Promise<ShowcaseAggregate | null>;

@@ -122,7 +122,10 @@ export function CopyButton({ value }: { value: string }) {
       <button
         className="inline-flex h-9 items-center gap-2 border border-black/10 bg-white px-3 text-xs font-semibold text-zinc-700 transition hover:border-black/20 hover:bg-zinc-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-black"
         onClick={async () => {
-          await navigator.clipboard.writeText(value);
+          const copyValue = value.startsWith("/")
+            ? new URL(value, window.location.origin).href
+            : value;
+          await navigator.clipboard.writeText(copyValue);
           setCopied(true);
           window.setTimeout(() => setCopied(false), 1800);
         }}

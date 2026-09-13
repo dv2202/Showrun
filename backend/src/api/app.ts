@@ -1,4 +1,3 @@
-import { timingSafeEqual } from 'node:crypto';
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify';
 import rateLimit from '@fastify/rate-limit';
 import { ZodError } from 'zod';
@@ -19,6 +18,8 @@ import {
   type AuthenticationProvider,
 } from '../auth/providers.js';
 import { AuthenticationService } from '../auth/authentication-service.js';
+import { CreatorAuthenticationService } from '../auth/creator-authentication-service.js';
+import { OAuthClient } from '../auth/oauth-client.js';
 import { ShowcaseService, publicShowcaseStatus } from '../showcases/showcase-service.js';
 import { ProxyService } from '../proxy/proxy-service.js';
 import { assertRouteAllowed, normalizeRequestedSuffix } from '../showcases/route-policy.js';
@@ -30,6 +31,7 @@ import {
   slugParamsSchema,
   updateShowcaseSchema,
 } from './schemas.js';
+import { creatorSessionToken, registerCreatorAuthRoutes } from './creator-auth-routes.js';
 
 export interface BuildAppOptions {
   config: AppConfig;
@@ -37,19 +39,6 @@ export interface BuildAppOptions {
   policy?: TargetPolicy;
   http?: SecureHttpClient;
   providers?: AuthenticationProvider[];
-}
-
-function authorized(header: string | undefined, expected: string): boolean {
-  if (!header?.startsWith('Bearer ')) return false;
-  const provided = Buffer.from(header.slice(7));
-  const target = Buffer.from(expected);
-  return provided.length === target.length && timingSafeEqual(provided, target);
-}
-
-async function creatorGuard(request: FastifyRequest, reply: FastifyReply, token: string) {
-  if (!authorized(request.headers.authorization, token)) {
-    await reply.code(401).send({ error: { code: 'UNAUTHORIZED', message: 'Unauthorized' } });
-  }
 }
 
 export async function buildApp(options: BuildAppOptions): Promise<FastifyInstance> {
@@ -88,10 +77,22 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
     new PreparationCoordinator(),
     config.SESSION_TTL_SECONDS,
   );
-  const showcases = new ShowcaseService(repository, policy, encryption, config.DEFAULT_USER_ID);
-  const proxy = new ProxyService(repository, authentication, http, config.PROXY_MAX_CONCURRENCY);
-  await showcases.initializeUser();
-
+  const showcases = new ShowcaseService(repository, policy, encryption);
+  const creatorAuthentication = new CreatorAuthenticationService(
+    repository,
+    config.AUTH_SESSION_TTL_SECONDS,
+  );
+  const oauth = new OAuthClient({
+    github: { clientId: config.GITHUB_CLIENT_ID, clientSecret: config.GITHUB_CLIENT_SECRET },
+    google: { clientId: config.GOOGLE_CLIENT_ID, clientSecret: config.GOOGLE_CLIENT_SECRET },
+  }, config.AUTH_PUBLIC_API_URL);
+  const proxy = new ProxyService(
+    repository,
+    authentication,
+    http,
+    config.PROXY_MAX_CONCURRENCY,
+    config.SHOWCASE_PUBLIC_PROXY_PREFIX,
+  );
   app.addHook('onClose', async () => repository.close());
 
   app.setErrorHandler(async (error, request, reply) => {
@@ -107,44 +108,61 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
     });
   });
 
+  await registerCreatorAuthRoutes(app, {
+    config,
+    authentication: creatorAuthentication,
+    encryption,
+    oauth,
+  });
+
   await app.register(async (admin) => {
-    admin.addHook('onRequest', (request, reply) => creatorGuard(request, reply, config.ADMIN_API_TOKEN));
+    const creatorIds = new WeakMap<FastifyRequest, string>();
+    admin.addHook('onRequest', async (request, reply) => {
+      const creator = await creatorAuthentication.authenticate(
+        creatorSessionToken(request, config.AUTH_COOKIE_NAME),
+      );
+      if (!creator) {
+        return reply.code(401).send({ error: { code: 'UNAUTHORIZED', message: 'Unauthorized' } });
+      }
+      creatorIds.set(request, creator.id);
+    });
+    const creatorId = (request: FastifyRequest) => creatorIds.get(request)!;
 
     admin.post('/api/showcases', async (request, reply) => {
-      const result = await showcases.create(createShowcaseSchema.parse(request.body));
+      const result = await showcases.create(createShowcaseSchema.parse(request.body), creatorId(request));
       return reply.code(201).send(result);
     });
-    admin.get('/api/showcases', async () => showcases.list());
+    admin.get('/api/showcases', async (request) => showcases.list(creatorId(request)));
     admin.get('/api/showcases/:id', async (request) => {
       const { id } = idParamsSchema.parse(request.params);
-      return showcases.get(id);
+      return showcases.get(id, creatorId(request));
     });
     admin.patch('/api/showcases/:id', async (request) => {
       const { id } = idParamsSchema.parse(request.params);
-      return showcases.update(id, updateShowcaseSchema.parse(request.body));
+      return showcases.update(id, updateShowcaseSchema.parse(request.body), creatorId(request));
     });
     admin.delete('/api/showcases/:id', async (request, reply) => {
       const { id } = idParamsSchema.parse(request.params);
-      await showcases.delete(id);
+      await showcases.delete(id, creatorId(request));
       return reply.code(204).send();
     });
     admin.post('/api/showcases/:id/prepare', async (request) => {
       const { id } = idParamsSchema.parse(request.params);
-      await showcases.get(id);
+      await showcases.get(id, creatorId(request));
       await authentication.prepare(id, true);
-      return showcases.get(id);
+      return showcases.get(id, creatorId(request));
     });
     admin.post('/api/showcases/:id/authenticate', async (request) => {
       const { id } = idParamsSchema.parse(request.params);
-      await showcases.get(id);
+      await showcases.get(id, creatorId(request));
       await authentication.prepare(id, true);
-      return showcases.get(id);
+      return showcases.get(id, creatorId(request));
     });
     admin.post('/api/showcases/:id/re-authenticate', async (request) => {
       const { id } = idParamsSchema.parse(request.params);
-      await showcases.get(id);
+      await showcases.get(id, creatorId(request));
       await authentication.reauthenticate(id);
-      return showcases.get(id);
+      return showcases.get(id, creatorId(request));
     });
   });
 

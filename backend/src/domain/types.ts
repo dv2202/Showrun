@@ -8,7 +8,8 @@ export const showcaseStates = [
 
 export type ShowcaseState = (typeof showcaseStates)[number];
 export type AuthenticationProviderKind = 'token' | 'password' | 'manual_session';
-export type ShowcaseMode = 'selected_routes';
+export type ShowcaseMode = 'selected_routes' | 'full_application';
+export type CreatorProvider = 'github' | 'google';
 
 export interface ShowcaseRoute {
   path: string;
@@ -25,6 +26,16 @@ export type VerificationStrategy =
 export interface User {
   id: string;
   email: string;
+  name: string | null;
+  avatarUrl: string | null;
+  passwordHash: string | null;
+  createdAt: Date;
+}
+
+export interface CreatorSession {
+  tokenHash: string;
+  userId: string;
+  expiresAt: Date;
   createdAt: Date;
 }
 

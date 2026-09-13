@@ -36,7 +36,7 @@ export const createShowcaseSchema = z.object({
   name: z.string().trim().min(1).max(120),
   slug: z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/).max(80).optional(),
   targetUrl: z.string().url(),
-  mode: z.literal('selected_routes'),
+  mode: z.enum(['selected_routes', 'full_application']),
   routes: z.array(showcaseRouteSchema).min(1).max(50),
   authentication: authenticationInputSchema.optional(),
   username: z.string().min(1).optional(),
@@ -76,3 +76,28 @@ export const updateShowcaseSchema = z.object({
 export const idParamsSchema = z.object({ id: z.string().uuid() });
 export const slugParamsSchema = z.object({ slug: z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/).max(80) });
 export const proxyParamsSchema = slugParamsSchema.extend({ '*': z.string().default('') });
+
+export const creatorRegistrationSchema = z.object({
+  name: z.string().trim().min(2).max(100),
+  email: z.string().trim().email().max(254),
+  password: z.string().min(10).max(200),
+});
+
+export const creatorLoginSchema = z.object({
+  email: z.string().trim().email().max(254),
+  password: z.string().min(1).max(200),
+});
+
+export const oauthProviderParamsSchema = z.object({
+  provider: z.enum(['github', 'google']),
+});
+
+export const oauthStartQuerySchema = z.object({
+  returnTo: z.string().max(500).optional(),
+});
+
+export const oauthCallbackQuerySchema = z.object({
+  code: z.string().min(1).optional(),
+  state: z.string().min(1).optional(),
+  error: z.string().optional(),
+});

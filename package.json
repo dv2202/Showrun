@@ -1,0 +1,10 @@
+{
+  "name": "showrun",
+  "private": true,
+  "scripts": {
+    "dev": "concurrently --kill-others-on-fail --names backend,frontend --prefix-colors yellow,cyan \"npm --prefix backend run dev\" \"npm --prefix frontend run dev\""
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1"
+  }
+}

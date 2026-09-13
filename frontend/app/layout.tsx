@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { AuthProvider } from "@/components/auth-provider";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -10,7 +11,7 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
   return (
     <html lang="en" className="scroll-smooth bg-canvas">
       <body className="min-h-screen bg-canvas font-sans text-ink antialiased selection:bg-signal selection:text-black">
-        {children}
+        <AuthProvider>{children}</AuthProvider>
       </body>
     </html>
   );

@@ -14,17 +14,19 @@ describe('target-origin response rewriting', () => {
       </body></html>`;
     const output = rewriteContent(
       Buffer.from(html), 'text/html; charset=utf-8', new URL('https://private.example/dashboard'),
-      'https://private.example', 'demo',
+      'https://private.example', 'demo', '/backend-showcase',
     ).toString();
-    expect(output).toContain('/showcase/demo/projects/42');
-    expect(output).toContain('/showcase/demo/assets/app.css');
-    expect(output).toContain('/showcase/demo/images/logo.png');
-    expect(output).toContain('/showcase/demo/images/small.png 1x');
-    expect(output).toContain('/showcase/demo/search');
-    expect(output).toContain('/showcase/demo/images/hero.png');
-    expect(output).toContain('/showcase/demo/tile.png');
+    expect(output).toContain('/backend-showcase/demo/projects/42');
+    expect(output).toContain('/backend-showcase/demo/assets/app.css');
+    expect(output).toContain('/backend-showcase/demo/images/logo.png');
+    expect(output).toContain('/backend-showcase/demo/images/small.png 1x');
+    expect(output).toContain('/backend-showcase/demo/search');
+    expect(output).toContain('/backend-showcase/demo/images/hero.png');
+    expect(output).toContain('/backend-showcase/demo/tile.png');
     expect(output).toContain('https://external.example/docs');
     expect(output).toContain('https://external.example/large.png 2x');
+    expect(output).toContain('data-showrun-interaction-guard');
+    expect(output).toContain('stopImmediatePropagation');
   });
 
   it('rewrites CSS url() values only for the configured target origin', () => {

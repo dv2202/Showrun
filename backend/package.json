@@ -8,12 +8,12 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
-    "dev": "tsx watch src/index.ts",
+    "dev": "nodemon --watch src --watch .env --ext ts,json --exec \"node --env-file-if-exists=.env --import tsx src/index.ts\"",
     "start": "node dist/index.js",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "db:migrate": "tsx scripts/migrate.ts",
+    "db:migrate": "node --env-file-if-exists=.env --import tsx scripts/migrate.ts",
     "playwright:install": "playwright install chromium"
   },
   "dependencies": {
@@ -29,6 +29,7 @@
   "devDependencies": {
     "@types/node": "^22.18.1",
     "@types/pg": "^8.15.5",
+    "nodemon": "^3.1.10",
     "tsx": "^4.20.5",
     "typescript": "^5.9.2",
     "vitest": "^5.0.0"

@@ -6,6 +6,8 @@ import type {
   ShowcaseAggregate,
   StoredSession,
   User,
+  CreatorProvider,
+  CreatorSession,
 } from '../domain/types.js';
 import type {
   CreateShowcaseRecord,
@@ -45,6 +47,26 @@ type DbSession = QueryResultRow & {
   created_at: Date;
   updated_at: Date;
 };
+
+type DbUser = QueryResultRow & {
+  id: string;
+  email: string;
+  name: string | null;
+  avatar_url: string | null;
+  password_hash: string | null;
+  created_at: Date;
+};
+
+function toUser(row: DbUser): User {
+  return {
+    id: row.id,
+    email: row.email,
+    name: row.name,
+    avatarUrl: row.avatar_url,
+    passwordHash: row.password_hash,
+    createdAt: row.created_at,
+  };
+}
 
 function toShowcase(row: DbShowcase): Showcase {
   return {
@@ -92,21 +114,96 @@ export class PostgresShowcaseRepository implements ShowcaseRepository {
     this.pool = new Pool({ connectionString, max: 10, idleTimeoutMillis: 30_000 });
   }
 
-  async ensureUser(id: string, email: string): Promise<User> {
-    const inserted = await this.pool.query<{ id: string; email: string; created_at: Date }>(
-      `INSERT INTO users (id, email) VALUES ($1, $2)
-       ON CONFLICT (id) DO NOTHING
-       RETURNING id, email, created_at`,
-      [id, email],
+  async createPasswordUser(email: string, name: string, passwordHash: string): Promise<User | null> {
+    const result = await this.pool.query<DbUser>(
+      `INSERT INTO users (id, email, name, password_hash)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (email) DO NOTHING
+       RETURNING *`,
+      [randomUUID(), email, name, passwordHash],
     );
-    const result = inserted.rows[0]
-      ? inserted
-      : await this.pool.query<{ id: string; email: string; created_at: Date }>(
-        'SELECT id, email, created_at FROM users WHERE id = $1',
-        [id],
+    return result.rows[0] ? toUser(result.rows[0]) : null;
+  }
+
+  async findUserByEmail(email: string): Promise<User | null> {
+    const result = await this.pool.query<DbUser>('SELECT * FROM users WHERE email = $1', [email]);
+    return result.rows[0] ? toUser(result.rows[0]) : null;
+  }
+
+  async upsertOAuthUser(input: {
+    provider: CreatorProvider;
+    providerAccountId: string;
+    email: string;
+    name: string | null;
+    avatarUrl: string | null;
+  }): Promise<User> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const account = await client.query<{ user_id: string }>(
+        'SELECT user_id FROM oauth_accounts WHERE provider = $1 AND provider_account_id = $2 FOR UPDATE',
+        [input.provider, input.providerAccountId],
       );
-    const row = result.rows[0]!;
-    return { id: row.id, email: row.email, createdAt: row.created_at };
+      let userResult;
+      if (account.rows[0]) {
+        userResult = await client.query<DbUser>(
+          `UPDATE users SET
+             name = COALESCE($2, name),
+             avatar_url = COALESCE($3, avatar_url)
+           WHERE id = $1 RETURNING *`,
+          [account.rows[0].user_id, input.name, input.avatarUrl],
+        );
+      } else {
+        userResult = await client.query<DbUser>(
+          `INSERT INTO users (id, email, name, avatar_url)
+           VALUES ($1, $2, $3, $4)
+           ON CONFLICT (email) DO UPDATE SET
+             name = COALESCE(EXCLUDED.name, users.name),
+             avatar_url = COALESCE(EXCLUDED.avatar_url, users.avatar_url)
+           RETURNING *`,
+          [randomUUID(), input.email, input.name, input.avatarUrl],
+        );
+        await client.query(
+          `INSERT INTO oauth_accounts (provider, provider_account_id, user_id)
+           VALUES ($1, $2, $3)
+           ON CONFLICT (provider, provider_account_id) DO UPDATE SET
+             user_id = EXCLUDED.user_id,
+             updated_at = now()`,
+          [input.provider, input.providerAccountId, userResult.rows[0]!.id],
+        );
+      }
+      await client.query('COMMIT');
+      return toUser(userResult.rows[0]!);
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async createCreatorSession(tokenHash: string, userId: string, expiresAt: Date): Promise<CreatorSession> {
+    const result = await this.pool.query<CreatorSession & QueryResultRow>(
+      `INSERT INTO creator_sessions (token_hash, user_id, expires_at)
+       VALUES ($1, $2, $3)
+       RETURNING token_hash AS "tokenHash", user_id AS "userId", expires_at AS "expiresAt", created_at AS "createdAt"`,
+      [tokenHash, userId, expiresAt],
+    );
+    return result.rows[0]!;
+  }
+
+  async getUserByCreatorSession(tokenHash: string, now: Date): Promise<User | null> {
+    const result = await this.pool.query<DbUser>(
+      `SELECT u.* FROM creator_sessions cs
+       JOIN users u ON u.id = cs.user_id
+       WHERE cs.token_hash = $1 AND cs.expires_at > $2`,
+      [tokenHash, now],
+    );
+    return result.rows[0] ? toUser(result.rows[0]) : null;
+  }
+
+  async deleteCreatorSession(tokenHash: string): Promise<void> {
+    await this.pool.query('DELETE FROM creator_sessions WHERE token_hash = $1', [tokenHash]);
   }
 
   async createShowcase(input: CreateShowcaseRecord): Promise<Showcase> {

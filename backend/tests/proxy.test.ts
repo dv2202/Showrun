@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { buildApp } from '../src/api/app.js';
 import { SecureHttpClient, type SecureHttpRequest, type SecureHttpResponse } from '../src/proxy/secure-http-client.js';
 import { MemoryShowcaseRepository } from '../src/storage/memory-repository.js';
-import { adminHeaders, publicPolicy, testConfig } from './helpers.js';
+import { authenticatedHeaders, publicPolicy, testConfig } from './helpers.js';
 
 class RecordingHttpClient extends SecureHttpClient {
   urls: URL[] = [];
@@ -44,8 +44,9 @@ describe('secure proxy behavior', () => {
   it('always derives upstream from stored configuration and keeps auth server-side', async () => {
     const http = new RecordingHttpClient();
     const app = await buildApp({ config: testConfig(), repository: new MemoryShowcaseRepository(), policy: publicPolicy(), http });
-    const created = await app.inject({ method: 'POST', url: '/api/showcases', headers: adminHeaders, payload });
-    await app.inject({ method: 'POST', url: `/api/showcases/${created.json().id}/authenticate`, headers: adminHeaders });
+    const headers = await authenticatedHeaders(app);
+    const created = await app.inject({ method: 'POST', url: '/api/showcases', headers, payload });
+    await app.inject({ method: 'POST', url: `/api/showcases/${created.json().id}/authenticate`, headers });
     const response = await app.inject({
       method: 'GET',
       url: '/showcase/proxy-app/path?url=http://127.0.0.1/admin',
@@ -64,7 +65,7 @@ describe('secure proxy behavior', () => {
     expect(http.attachedHeaders[0]!.referer).toBeUndefined();
     expect(http.attachedHeaders[0]!['x-forwarded-host']).toBeUndefined();
     expect(response.headers['set-cookie']).toBeUndefined();
-    expect(response.body).toContain('/showcase/proxy-app/next');
+    expect(response.body).toContain('/backend-showcase/proxy-app/next');
     expect(response.body).toContain('https://external.example/docs');
     expect(response.body).not.toContain('server-token');
     await app.close();
@@ -73,8 +74,9 @@ describe('secure proxy behavior', () => {
   it('allows nested configured routes, preserves queries, and normalizes trailing slashes', async () => {
     const http = new RecordingHttpClient();
     const app = await buildApp({ config: testConfig(), repository: new MemoryShowcaseRepository(), policy: publicPolicy(), http });
-    const created = await app.inject({ method: 'POST', url: '/api/showcases', headers: adminHeaders, payload });
-    await app.inject({ method: 'POST', url: `/api/showcases/${created.json().id}/prepare`, headers: adminHeaders });
+    const headers = await authenticatedHeaders(app);
+    const created = await app.inject({ method: 'POST', url: '/api/showcases', headers, payload });
+    await app.inject({ method: 'POST', url: `/api/showcases/${created.json().id}/prepare`, headers });
     const response = await app.inject({ method: 'GET', url: '/showcase/proxy-app/path/nested/?filter=active' });
     expect(response.statusCode).toBe(200);
     expect(http.urls[0]!.pathname).toBe('/base/path/nested');
@@ -85,7 +87,8 @@ describe('secure proxy behavior', () => {
   it('returns 404 for disallowed routes before making an upstream request', async () => {
     const http = new RecordingHttpClient();
     const app = await buildApp({ config: testConfig(), repository: new MemoryShowcaseRepository(), policy: publicPolicy(), http });
-    await app.inject({ method: 'POST', url: '/api/showcases', headers: adminHeaders, payload });
+    const headers = await authenticatedHeaders(app);
+    await app.inject({ method: 'POST', url: '/api/showcases', headers, payload });
     const response = await app.inject({ method: 'GET', url: '/showcase/proxy-app/admin' });
     expect(response.statusCode).toBe(404);
     expect(http.urls).toHaveLength(0);
@@ -95,7 +98,8 @@ describe('secure proxy behavior', () => {
   it('rejects mutation methods at the read-only boundary', async () => {
     const http = new RecordingHttpClient();
     const app = await buildApp({ config: testConfig(), repository: new MemoryShowcaseRepository(), policy: publicPolicy(), http });
-    await app.inject({ method: 'POST', url: '/api/showcases', headers: adminHeaders, payload });
+    const headers = await authenticatedHeaders(app);
+    await app.inject({ method: 'POST', url: '/api/showcases', headers, payload });
     const response = await app.inject({ method: 'POST', url: '/showcase/proxy-app/path', payload: { destructive: true } });
     expect(response.statusCode).toBe(405);
     expect(response.json().error.code).toBe('UNSUPPORTED_APPLICATION');
@@ -106,8 +110,9 @@ describe('secure proxy behavior', () => {
   it('propagates safe upstream response status codes', async () => {
     const http = new RecordingHttpClient();
     const app = await buildApp({ config: testConfig(), repository: new MemoryShowcaseRepository(), policy: publicPolicy(), http });
-    const created = await app.inject({ method: 'POST', url: '/api/showcases', headers: adminHeaders, payload });
-    await app.inject({ method: 'POST', url: `/api/showcases/${created.json().id}/prepare`, headers: adminHeaders });
+    const headers = await authenticatedHeaders(app);
+    const created = await app.inject({ method: 'POST', url: '/api/showcases', headers, payload });
+    await app.inject({ method: 'POST', url: `/api/showcases/${created.json().id}/prepare`, headers });
     http.nextStatus = 418;
     const response = await app.inject({ method: 'GET', url: '/showcase/proxy-app/path' });
     expect(response.statusCode).toBe(418);
@@ -118,8 +123,9 @@ describe('secure proxy behavior', () => {
     const repository = new MemoryShowcaseRepository();
     const http = new RecordingHttpClient();
     const app = await buildApp({ config: testConfig(), repository, policy: publicPolicy(), http });
-    const created = await app.inject({ method: 'POST', url: '/api/showcases', headers: adminHeaders, payload });
-    await app.inject({ method: 'POST', url: `/api/showcases/${created.json().id}/authenticate`, headers: adminHeaders });
+    const headers = await authenticatedHeaders(app);
+    const created = await app.inject({ method: 'POST', url: '/api/showcases', headers, payload });
+    await app.inject({ method: 'POST', url: `/api/showcases/${created.json().id}/authenticate`, headers });
     http.nextStatus = 401;
     const response = await app.inject({ method: 'GET', url: '/showcase/proxy-app/path' });
     expect(response.statusCode).toBe(401);

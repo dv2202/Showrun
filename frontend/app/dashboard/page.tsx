@@ -3,15 +3,20 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { DashboardShell } from "@/components/shell";
+import { useAuth } from "@/components/auth-provider";
 import { CopyButton, Icon, Skeleton, Status } from "@/components/ui";
 import type { Showcase } from "@/lib/types";
 import { getShowcases } from "@/services/showcases";
 
 export default function Dashboard() {
   const [projects, setProjects] = useState<Showcase[] | null>(null);
+  const [loadError, setLoadError] = useState(false);
+  const { user } = useAuth();
 
   useEffect(() => {
-    getShowcases().then(setProjects);
+    getShowcases()
+      .then(setProjects)
+      .catch(() => setLoadError(true));
   }, []);
 
   const active = projects?.filter((project) => project.status === "active").length;
@@ -22,10 +27,10 @@ export default function Dashboard() {
       <div className="mb-10 flex flex-col justify-between gap-5 sm:flex-row sm:items-end">
         <div>
           <p className="mb-2 text-[10px] font-bold uppercase tracking-[0.18em] text-zinc-500">
-            Devansh’s workspace
+            {user?.name ?? "Creator"}’s workspace
           </p>
           <h1 className="text-3xl font-semibold tracking-[-0.04em] sm:text-4xl">
-            Good morning, Devansh.
+            Welcome back, {user?.name.split(" ")[0] ?? "Creator"}.
           </h1>
           <p className="mt-2 text-sm text-zinc-500">Everything you’re sharing, in one place.</p>
         </div>
@@ -73,20 +78,26 @@ export default function Dashboard() {
       </section>
 
       <section className="border border-black/10 bg-white" id="showcases">
-        <div className="flex items-center justify-between border-b border-black/10 px-5 py-4 sm:px-6">
+        <div className="border-b border-black/10 px-5 py-4 sm:px-6">
           <div>
             <h2 className="text-sm font-semibold">Recent showcases</h2>
-            <p className="mt-1 text-xs text-zinc-500">Projects recently viewed or updated</p>
+            <p className="mt-1 text-xs text-zinc-500">Projects in this workspace</p>
           </div>
-          <button
-            className="text-xs font-semibold text-zinc-500 transition hover:text-black"
-            type="button"
-          >
-            View all
-          </button>
         </div>
 
-        {!projects ? (
+        {loadError ? (
+          <div className="grid min-h-72 place-items-center p-8 text-center">
+            <div>
+              <span className="mx-auto grid h-11 w-11 place-items-center border border-red-200 bg-red-50 text-red-600">
+                <Icon name="warning" />
+              </span>
+              <h3 className="mt-4 text-sm font-semibold">Could not load showcases</h3>
+              <p className="mt-2 text-xs text-zinc-500">
+                Check that the backend is running, then reload this page.
+              </p>
+            </div>
+          </div>
+        ) : !projects ? (
           <div className="space-y-3 p-5 sm:p-6">
             {[0, 1, 2].map((item) => (
               <Skeleton className="h-16 w-full" key={item} />
@@ -142,10 +153,10 @@ export default function Dashboard() {
                   {project.lastAuthenticated}
                 </p>
                 <p className="truncate font-mono text-[11px] text-zinc-500">
-                  showcase.app/devansh/{project.slug}
+                  /showcase/{project.slug}
                 </p>
                 <div className="flex items-center gap-2">
-                  <CopyButton value={`https://showcase.app/devansh/${project.slug}`} />
+                  <CopyButton value={`/showcase/${project.slug}`} />
                   <Link
                     aria-label={`Manage ${project.name}`}
                     className="grid h-9 w-9 place-items-center border border-black/10 bg-white text-zinc-500 transition hover:border-black/20 hover:text-black"
@@ -158,44 +169,6 @@ export default function Dashboard() {
             ))}
           </div>
         )}
-      </section>
-
-      <section className="mt-8 grid gap-8 lg:grid-cols-[1.4fr_.6fr]" id="activity">
-        <div className="border border-black/10 bg-white p-6">
-          <div className="mb-6 flex items-center justify-between">
-            <h2 className="text-sm font-semibold">Activity</h2>
-            <span className="font-mono text-[10px] uppercase tracking-wider text-zinc-400">
-              Last 24 hours
-            </span>
-          </div>
-          <div className="space-y-5">
-            <div className="flex gap-3">
-              <span className="mt-1 h-2 w-2 shrink-0 rounded-full bg-emerald-500" />
-              <div>
-                <p className="text-xs">
-                  <strong>Atlas Console</strong> was opened from a shared link
-                </p>
-                <time className="mt-1 block text-[11px] text-zinc-400">17 minutes ago</time>
-              </div>
-            </div>
-            <div className="flex gap-3">
-              <span className="mt-1 h-2 w-2 shrink-0 rounded-full bg-signal ring-1 ring-black/20" />
-              <div>
-                <p className="text-xs">
-                  <strong>Ledger Preview</strong> authentication expired
-                </p>
-                <time className="mt-1 block text-[11px] text-zinc-400">2 hours ago</time>
-              </div>
-            </div>
-          </div>
-        </div>
-        <div className="border border-black/10 bg-[#111310] p-6 text-white">
-          <Icon className="h-5 w-5 text-signal" name="shield" />
-          <h2 className="mt-8 text-lg font-semibold tracking-tight">2 showcases are healthy</h2>
-          <p className="mt-2 text-xs leading-5 text-zinc-400">
-            Authentication checks run before every public session.
-          </p>
-        </div>
       </section>
     </DashboardShell>
   );

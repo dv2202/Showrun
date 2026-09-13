@@ -5,6 +5,8 @@ import type {
   ShowcaseAggregate,
   StoredSession,
   User,
+  CreatorProvider,
+  CreatorSession,
 } from '../domain/types.js';
 import type {
   CreateShowcaseRecord,
@@ -17,14 +19,72 @@ export class MemoryShowcaseRepository implements ShowcaseRepository {
   private readonly showcases = new Map<string, Showcase>();
   private readonly authentications = new Map<string, AuthenticationConfig>();
   private readonly sessions = new Map<string, StoredSession>();
+  private readonly creatorSessions = new Map<string, CreatorSession>();
+  private readonly oauthAccounts = new Map<string, string>();
   readonly visits: Array<{ showcaseId: string; status: number }> = [];
 
-  async ensureUser(id: string, email: string): Promise<User> {
-    const existing = this.users.get(id);
-    if (existing) return existing;
-    const user = { id, email, createdAt: new Date() };
-    this.users.set(id, user);
+  async createPasswordUser(email: string, name: string, passwordHash: string): Promise<User | null> {
+    if ([...this.users.values()].some((user) => user.email === email)) return null;
+    const user: User = {
+      id: randomUUID(),
+      email,
+      name,
+      avatarUrl: null,
+      passwordHash,
+      createdAt: new Date(),
+    };
+    this.users.set(user.id, user);
     return user;
+  }
+
+  async findUserByEmail(email: string): Promise<User | null> {
+    return [...this.users.values()].find((user) => user.email === email) ?? null;
+  }
+
+  async upsertOAuthUser(input: {
+    provider: CreatorProvider;
+    providerAccountId: string;
+    email: string;
+    name: string | null;
+    avatarUrl: string | null;
+  }): Promise<User> {
+    const accountKey = `${input.provider}:${input.providerAccountId}`;
+    const accountUserId = this.oauthAccounts.get(accountKey);
+    const existing = accountUserId
+      ? this.users.get(accountUserId)
+      : [...this.users.values()].find((user) => user.email === input.email);
+    const user: User = existing
+      ? { ...existing, name: input.name ?? existing.name, avatarUrl: input.avatarUrl ?? existing.avatarUrl }
+      : {
+          id: randomUUID(),
+          email: input.email,
+          name: input.name,
+          avatarUrl: input.avatarUrl,
+          passwordHash: null,
+          createdAt: new Date(),
+        };
+    this.users.set(user.id, user);
+    this.oauthAccounts.set(accountKey, user.id);
+    return user;
+  }
+
+  async createCreatorSession(tokenHash: string, userId: string, expiresAt: Date): Promise<CreatorSession> {
+    const session = { tokenHash, userId, expiresAt, createdAt: new Date() };
+    this.creatorSessions.set(tokenHash, session);
+    return session;
+  }
+
+  async getUserByCreatorSession(tokenHash: string, now: Date): Promise<User | null> {
+    const session = this.creatorSessions.get(tokenHash);
+    if (!session || session.expiresAt <= now) {
+      if (session) this.creatorSessions.delete(tokenHash);
+      return null;
+    }
+    return this.users.get(session.userId) ?? null;
+  }
+
+  async deleteCreatorSession(tokenHash: string): Promise<void> {
+    this.creatorSessions.delete(tokenHash);
   }
 
   async createShowcase(input: CreateShowcaseRecord): Promise<Showcase> {

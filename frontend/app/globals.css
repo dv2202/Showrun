@@ -1,3 +1,226 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+@layer utilities {
+  .landing-grid-drift {
+    animation: landing-grid-drift 18s linear infinite;
+  }
+
+  .landing-hero-glow {
+    animation: landing-glow 6s ease-in-out infinite;
+  }
+
+  .landing-hero-eyebrow,
+  .landing-hero-copy,
+  .landing-hero-actions,
+  .landing-preview-enter {
+    opacity: 0;
+    animation: landing-enter 650ms cubic-bezier(0.2, 0.8, 0.2, 1) forwards;
+  }
+
+  .landing-hero-eyebrow {
+    animation-delay: 80ms;
+  }
+
+  .landing-hero-copy {
+    animation-delay: 430ms;
+  }
+
+  .landing-hero-actions {
+    animation-delay: 530ms;
+  }
+
+  .landing-preview-enter {
+    animation-name: landing-preview-enter;
+    animation-duration: 900ms;
+    animation-delay: 340ms;
+  }
+
+  .landing-headline-line {
+    display: block;
+    overflow: hidden;
+    margin-bottom: -0.08em;
+    padding-bottom: 0.08em;
+  }
+
+  .landing-headline-text {
+    display: block;
+    transform: translateY(110%);
+    animation: landing-text-rise 850ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  }
+
+  .landing-headline-text-1 {
+    animation-delay: 150ms;
+  }
+
+  .landing-headline-text-2 {
+    animation-delay: 230ms;
+  }
+
+  .landing-headline-text-3 {
+    animation-delay: 310ms;
+  }
+
+  .landing-signal-square {
+    animation: landing-square-breathe 4s ease-in-out infinite;
+  }
+
+  .landing-runtime-browser {
+    transform-style: preserve-3d;
+    transition: transform 180ms ease-out;
+  }
+
+  .landing-runtime-step {
+    opacity: 0.38;
+    transform: translateX(-6px);
+    transition:
+      opacity 450ms ease,
+      transform 450ms ease,
+      border-color 450ms ease,
+      background-color 450ms ease,
+      color 450ms ease;
+  }
+
+  .landing-runtime-step-active,
+  .landing-runtime-step-complete {
+    opacity: 1;
+    transform: translateX(0);
+  }
+
+  .landing-route {
+    opacity: 0;
+    transform: translateY(8px);
+    transition:
+      opacity 450ms cubic-bezier(0.2, 0.8, 0.2, 1),
+      transform 450ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  }
+
+  .landing-route-visible {
+    opacity: 1;
+    transform: translateY(0);
+  }
+
+  .landing-ticker {
+    animation: landing-ticker 26s linear infinite;
+  }
+
+  .landing-reveal-grid > * {
+    opacity: 0;
+    transform: translateY(28px);
+    transition:
+      opacity 700ms ease,
+      transform 700ms cubic-bezier(0.2, 0.8, 0.2, 1),
+      background-color 200ms ease;
+  }
+
+  .landing-reveal-grid[data-visible="true"] > * {
+    opacity: 1;
+    transform: translateY(0);
+  }
+
+  .landing-reveal-grid[data-visible="true"] > :nth-child(2) {
+    transition-delay: 110ms;
+  }
+
+  .landing-reveal-grid[data-visible="true"] > :nth-child(3) {
+    transition-delay: 220ms;
+  }
+
+  .landing-closing::after {
+    position: absolute;
+    top: -13rem;
+    right: -8rem;
+    width: 23rem;
+    height: 23rem;
+    border-radius: 9999px;
+    background: #d7ff64;
+    opacity: 0.1;
+    filter: blur(100px);
+    content: "";
+    pointer-events: none;
+  }
+}
+
+@keyframes landing-enter {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes landing-preview-enter {
+  from {
+    opacity: 0;
+    transform: translateY(28px) rotate(1deg);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) rotate(0);
+  }
+}
+
+@keyframes landing-text-rise {
+  to {
+    transform: translateY(0);
+  }
+}
+
+@keyframes landing-grid-drift {
+  to {
+    background-position: 48px 48px;
+  }
+}
+
+@keyframes landing-glow {
+  0%,
+  100% {
+    opacity: 0.3;
+    transform: scale(0.96);
+  }
+  50% {
+    opacity: 0.45;
+    transform: scale(1.04);
+  }
+}
+
+@keyframes landing-square-breathe {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(0.91);
+  }
+}
+
+@keyframes landing-ticker {
+  to {
+    transform: translateX(-50%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .landing-grid-drift,
+  .landing-hero-glow,
+  .landing-signal-square,
+  .landing-ticker {
+    animation: none;
+  }
+
+  .landing-hero-eyebrow,
+  .landing-hero-copy,
+  .landing-hero-actions,
+  .landing-preview-enter,
+  .landing-headline-text,
+  .landing-reveal-grid > * {
+    opacity: 1;
+    transform: none;
+    animation: none;
+    transition: none;
+  }
+}

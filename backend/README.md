@@ -29,13 +29,23 @@ npm run build
 npm start
 ```
 
-Generate `ENCRYPTION_KEY` with `openssl rand -base64 32`. `ADMIN_API_TOKEN` must be a random value of at least 24 characters. Keep both in a secret manager, never source control. Terminate TLS at a trusted ingress; creator credentials must never cross plaintext transport.
+Generate `ENCRYPTION_KEY` with `openssl rand -base64 32` and keep it in a secret manager, never source control. Terminate TLS at a trusted ingress; creator credentials must never cross plaintext transport.
 
-The creator endpoints require `Authorization: Bearer <ADMIN_API_TOKEN>`. The single configured `DEFAULT_USER_ID` is the MVP owner identity.
+Creator management endpoints require an opaque, HttpOnly session cookie issued by the creator authentication routes below. Each showcase is owned by the authenticated creator account.
 
 ## API
 
 Creator-only:
+
+- `POST /api/auth/email/register`
+- `POST /api/auth/email/login`
+- `POST /api/auth/logout`
+- `GET /api/auth/session`
+- `GET /api/auth/providers`
+- `GET /api/auth/oauth/github`
+- `GET /api/auth/oauth/github/callback`
+- `GET /api/auth/oauth/google`
+- `GET /api/auth/oauth/google/callback`
 
 - `POST /api/showcases`
 - `GET /api/showcases`
@@ -50,6 +60,19 @@ Public:
 
 - `GET /api/showcases/:slug/status` (also `/showcase/:slug/status`)
 - `GET|HEAD /showcase/:slug` and `/showcase/:slug/*`
+
+Configure OAuth apps with callback URLs using `AUTH_PUBLIC_API_URL` (the local frontend gateway uses
+`http://localhost:3000/backend-api`):
+
+```text
+http://localhost:3000/backend-api/auth/oauth/github/callback
+http://localhost:3000/backend-api/auth/oauth/google/callback
+```
+
+Email passwords are stored as scrypt hashes. OAuth account links and opaque session token hashes are
+stored in the `oauth_accounts` and `creator_sessions` tables created by migration `003_creator_auth.sql`.
+The browser receives only a secure, HttpOnly session cookie; provider access tokens are used server-side
+for the callback and are never persisted or returned.
 
 Create/configure authentication in this shape:
 
@@ -91,6 +114,9 @@ Verification also supports `expected_url`, `authenticated_endpoint`, and `absenc
 - Every HTTP/HTTPS hop is resolved and checked immediately before a connection pinned to the validated address. All DNS answers must be public. Redirects are independently revalidated.
 - Loopback, private, link-local, multicast, reserved, metadata, IPv4-mapped IPv6, and unsupported protocols are rejected.
 - Incoming visitor cookies/authorization are removed. Session cookies and configured auth headers are attached only server-side. `Set-Cookie`, auth, hop-by-hop, and conflicting framing headers are removed from proxy responses.
+- Target HTML is rendered inside a sandboxed frontend iframe. Same-origin URLs are rewritten through
+  `SHOWCASE_PUBLIC_PROXY_PREFIX`, and an early capture-phase guard blocks pointer, keyboard, form,
+  drag, and context-menu actions while preserving scrolling and hover rendering.
 - Browser service workers and WebSockets are blocked; browser HTTP requests use the same validated, pinned transport as the proxy.
 - Authentication failures do not automatically loop. An `ERROR` showcase requires creator action. Concurrent preparation shares a single promise per showcase.
 
@@ -100,6 +126,8 @@ Verification also supports `expected_url`, `authenticated_endpoint`, and `absenc
 - Rewriting covers HTML `href`, `src`, `action`, `poster`, `srcset`, inline/style-block CSS URLs, and CSS responses. JavaScript string rewriting, streaming responses, downloads larger than the configured response cap, signed absolute URLs, and complex CSP-dependent applications are not supported.
 - Password-authenticated targets must use cookies for subsequent HTTP authentication. Target credentials kept only in local storage cannot be safely attached by the server-side proxy and are unsupported.
 - Developers must explicitly configure every required page, asset, and read-only API route. The backend never crawls or discovers dependencies.
+- JavaScript-generated absolute URLs are not rewritten. Applications that construct root-relative
+  asset or API URLs at runtime may need target-specific changes before they render correctly.
 - The preparation coordinator deduplicates within one backend process. Run one backend replica for this MVP; add a PostgreSQL advisory-lock implementation before horizontal API scaling.
 - Background session polling is intentionally absent. Expiry is detected lazily by TTL, 401, optional configured 403, login redirects, or a configured unauthenticated response marker.
 

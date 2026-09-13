@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { DashboardShell } from "@/components/shell";
 import { Icon } from "@/components/ui";
 import type { ShowcaseMode, ShowcaseRoute } from "@/lib/types";
+import { ApiError } from "@/services/api";
 import { createShowcase } from "@/services/showcases";
 
 const steps = ["Connect application", "Showcase mode", "Configure routes"];
@@ -12,22 +13,10 @@ const inputClass =
   "h-11 w-full border border-black/15 bg-white px-3.5 text-sm text-ink outline-none transition placeholder:text-zinc-400 focus:border-black focus:ring-1 focus:ring-black";
 const defaultRoutes: ShowcaseRoute[] = [
   {
-    id: "route_dashboard",
-    path: "/dashboard",
-    title: "Dashboard",
-    description: "Main dashboard showing the application's core metrics.",
-  },
-  {
-    id: "route_projects",
-    path: "/projects",
-    title: "Projects",
-    description: "Project management interface and project listing.",
-  },
-  {
-    id: "route_analytics",
-    path: "/analytics",
-    title: "Analytics",
-    description: "Data visualization and reporting interface.",
+    id: "route_initial",
+    path: "/",
+    title: "",
+    description: "",
   },
 ];
 
@@ -36,12 +25,25 @@ export default function Create() {
   const [applicationUrl, setApplicationUrl] = useState("");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
+  const [loginUrl, setLoginUrl] = useState("");
+  const [usernameSelector, setUsernameSelector] = useState("");
+  const [passwordSelector, setPasswordSelector] = useState("");
+  const [submitSelector, setSubmitSelector] = useState("");
+  const [authenticatedSelector, setAuthenticatedSelector] = useState("");
   const [mode, setMode] = useState<ShowcaseMode>("selected_routes");
   const [routes, setRoutes] = useState<ShowcaseRoute[]>(defaultRoutes);
   const [attempted, setAttempted] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
   const router = useRouter();
   const validUrl = /^https:\/\/[a-z0-9.-]+(?::\d+)?(?:\/.*)?$/i.test(applicationUrl);
+  const validLoginUrl = /^https:\/\/[a-z0-9.-]+(?::\d+)?(?:\/.*)?$/i.test(loginUrl);
+  const loginMappingValid =
+    validLoginUrl &&
+    usernameSelector.trim() &&
+    passwordSelector.trim() &&
+    submitSelector.trim() &&
+    authenticatedSelector.trim();
   const routesValid =
     routes.length > 0 && routes.every((route) => route.path.startsWith("/") && route.title.trim());
 
@@ -62,7 +64,7 @@ export default function Create() {
   };
 
   const continueFlow = async () => {
-    if (step === 0 && (!validUrl || !username.trim() || !password)) {
+    if (step === 0 && (!validUrl || !username.trim() || !password || !loginMappingValid)) {
       setAttempted(true);
       return;
     }
@@ -82,25 +84,38 @@ export default function Create() {
     }
 
     setSubmitting(true);
-    const credentials = { username, password };
-    const host = new URL(applicationUrl).hostname.split(".")[0];
-    const name = host
-      .split("-")
-      .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-      .join(" ");
-    const created = await createShowcase({
-      name,
-      description: routes[0]?.description ?? "Private application showcase.",
-      targetUrl: applicationUrl,
-      credentials,
-      mode,
-      routes,
-      accent: "#d7ff64",
-      creator: "Devansh Shah",
-    });
-    setUsername("");
-    setPassword("");
-    router.push(`/projects/${created.id}`);
+    setSubmitError(null);
+    try {
+      const credentials = { username, password };
+      const host = new URL(applicationUrl).hostname.split(".")[0];
+      const name = host
+        .split("-")
+        .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+        .join(" ");
+      const created = await createShowcase({
+        name,
+        description: routes[0]?.description ?? "Private application showcase.",
+        targetUrl: applicationUrl,
+        credentials,
+        login: {
+          loginUrl,
+          usernameSelector,
+          passwordSelector,
+          submitSelector,
+          authenticatedSelector,
+        },
+        mode,
+        routes,
+      });
+      setUsername("");
+      setPassword("");
+      router.push(`/projects/${created.id}`);
+    } catch (error) {
+      setSubmitError(
+        error instanceof ApiError ? error.message : "The showcase could not be created.",
+      );
+      setSubmitting(false);
+    }
   };
 
   return (
@@ -221,19 +236,135 @@ export default function Create() {
                         </span>
                       )}
                     </label>
+                    <div className="border-t border-black/10 pt-6">
+                      <div className="mb-4">
+                        <h3 className="text-xs font-semibold">Login mapping</h3>
+                        <p className="mt-1 text-[11px] leading-5 text-zinc-500">
+                          Tell the secure browser where to sign in and how it confirms success.
+                          Selectors are explicit and are never guessed.
+                        </p>
+                      </div>
+                      <div className="space-y-4">
+                        <label className="block">
+                          <span className="mb-2 block text-xs font-semibold">Login URL</span>
+                          <input
+                            aria-describedby="login-url-help"
+                            aria-invalid={attempted && !validLoginUrl}
+                            className={`${inputClass} font-mono text-xs ${attempted && !validLoginUrl ? "border-red-500 ring-1 ring-red-500" : ""}`}
+                            onChange={(event) => setLoginUrl(event.target.value)}
+                            placeholder="e.g. https://app.example.com/login"
+                            type="url"
+                            value={loginUrl}
+                          />
+                          <span
+                            className="mt-1.5 block text-[11px] leading-4 text-zinc-500"
+                            id="login-url-help"
+                          >
+                            The exact HTTPS page where the project account signs in.
+                          </span>
+                        </label>
+                        <div className="grid gap-4 sm:grid-cols-2">
+                          {[
+                            {
+                              id: "username-selector",
+                              label: "Username selector",
+                              placeholder: 'e.g. input[name="email"]',
+                              help: "The email or username input on the login page.",
+                              value: usernameSelector,
+                              setValue: setUsernameSelector,
+                            },
+                            {
+                              id: "password-selector",
+                              label: "Password selector",
+                              placeholder: 'e.g. input[type="password"]',
+                              help: "The password input on the login page.",
+                              value: passwordSelector,
+                              setValue: setPasswordSelector,
+                            },
+                            {
+                              id: "submit-selector",
+                              label: "Submit selector",
+                              placeholder: 'e.g. button[type="submit"]',
+                              help: "The button that submits the login form.",
+                              value: submitSelector,
+                              setValue: setSubmitSelector,
+                            },
+                            {
+                              id: "authenticated-selector",
+                              label: "Authenticated selector",
+                              placeholder: 'e.g. [data-testid="profile-button"]',
+                              help: "An element visible only after login, such as the profile or account button.",
+                              value: authenticatedSelector,
+                              setValue: setAuthenticatedSelector,
+                            },
+                          ].map((field) => (
+                            <label className="block" key={field.label}>
+                              <span className="mb-2 block text-xs font-semibold">
+                                {field.label}
+                              </span>
+                              <input
+                                aria-describedby={`${field.id}-help`}
+                                aria-invalid={attempted && !field.value.trim()}
+                                className={`${inputClass} font-mono text-xs ${attempted && !field.value.trim() ? "border-red-500 ring-1 ring-red-500" : ""}`}
+                                onChange={(event) => field.setValue(event.target.value)}
+                                placeholder={field.placeholder}
+                                value={field.value}
+                              />
+                              <span
+                                className="mt-1.5 block text-[11px] leading-4 text-zinc-500"
+                                id={`${field.id}-help`}
+                              >
+                                {field.help}
+                              </span>
+                            </label>
+                          ))}
+                        </div>
+                      </div>
+                      {attempted && !loginMappingValid && (
+                        <p className="mt-3 text-[11px] text-red-600">
+                          Complete the HTTPS login URL and all four selectors.
+                        </p>
+                      )}
+                    </div>
                   </div>
                 </div>
-                <aside className="h-fit border border-emerald-200 bg-emerald-50 p-5">
-                  <span className="grid h-9 w-9 place-items-center bg-emerald-100 text-emerald-700">
-                    <Icon name="shield" />
-                  </span>
-                  <h3 className="mt-6 text-sm font-semibold text-emerald-950">
-                    Private connection
-                  </h3>
-                  <p className="mt-2 text-xs leading-5 text-emerald-800/70">
-                    Credentials are request-only. After creation, this interface shows only session
-                    health—never the saved username or password.
-                  </p>
+                <aside className="h-fit space-y-4">
+                  <div className="border border-emerald-200 bg-emerald-50 p-5">
+                    <span className="grid h-9 w-9 place-items-center bg-emerald-100 text-emerald-700">
+                      <Icon name="shield" />
+                    </span>
+                    <h3 className="mt-6 text-sm font-semibold text-emerald-950">
+                      Private connection
+                    </h3>
+                    <p className="mt-2 text-xs leading-5 text-emerald-800/70">
+                      Credentials are request-only. After creation, this interface shows only
+                      session health—never the saved username or password.
+                    </p>
+                  </div>
+                  <div className="border border-black/10 bg-zinc-50 p-5">
+                    <h3 className="text-sm font-semibold">How to find a selector</h3>
+                    <ol className="mt-3 space-y-2 text-[11px] leading-5 text-zinc-600">
+                      <li>1. Open the page in Chrome and right-click the element.</li>
+                      <li>2. Choose Inspect and look at the highlighted HTML.</li>
+                      <li>
+                        3. Prefer a stable <code className="font-mono text-black">id</code>,{" "}
+                        <code className="font-mono text-black">name</code>, or{" "}
+                        <code className="font-mono text-black">data-testid</code> attribute.
+                      </li>
+                    </ol>
+                    <div className="mt-4 border-l-2 border-signal bg-white px-3 py-2">
+                      <p className="text-[10px] font-semibold uppercase tracking-[0.1em] text-zinc-400">
+                        Your screenshot
+                      </p>
+                      <code className="mt-1 block break-all font-mono text-[11px] text-black">
+                        [data-testid=&quot;profile-button&quot;]
+                      </code>
+                    </div>
+                    <p className="mt-3 text-[11px] leading-5 text-zinc-500">
+                      Avoid generated class names and selectors containing nth-child because they
+                      can change when the page layout changes.
+                    </p>
+                  </div>
                 </aside>
               </div>
             )}
@@ -333,8 +464,8 @@ export default function Create() {
                         {
                           id: `route_${Date.now()}`,
                           path: "/",
-                          title: "New route",
-                          description: "Describe what this page demonstrates.",
+                          title: "",
+                          description: "",
                         },
                       ])
                     }
@@ -472,6 +603,14 @@ export default function Create() {
               </button>
             </div>
           </footer>
+          {submitError && (
+            <div
+              className="border-t border-red-200 bg-red-50 px-6 py-3 text-xs text-red-700 sm:px-9"
+              role="alert"
+            >
+              {submitError}
+            </div>
+          )}
         </section>
       </div>
     </DashboardShell>

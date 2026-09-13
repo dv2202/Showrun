@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useParams, useSearchParams } from "next/navigation";
+import { useParams } from "next/navigation";
 import { Brand } from "@/components/shell";
 import { Icon, type IconName } from "@/components/ui";
 import type { PrepareState, Showcase, ShowcaseRoute } from "@/lib/types";
@@ -101,9 +101,6 @@ function ShowcaseChrome({
           <span className="truncate text-xs text-zinc-500">{showcase.name}</span>
         </div>
         <div className="flex items-center gap-3">
-          {showcase.creator && (
-            <span className="hidden text-[10px] text-zinc-400 sm:block">by {showcase.creator}</span>
-          )}
           <span
             className="group relative inline-flex items-center gap-1.5 border border-black/10 bg-zinc-50 px-2 py-1 text-[9px] font-semibold text-zinc-500"
             tabIndex={0}
@@ -196,276 +193,18 @@ function ShowcaseChrome({
   );
 }
 
-function DashboardTarget() {
-  return (
-    <>
-      <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
-        <div>
-          <p className="text-xs font-medium text-slate-400">Thursday, September 10</p>
-          <h2 className="mt-2 text-2xl font-semibold tracking-[-0.03em] text-slate-900 sm:text-3xl">
-            Welcome back, Devansh
-          </h2>
-          <p className="mt-2 text-sm text-slate-500">A quick look across the workspace.</p>
-        </div>
-        <button className="h-9 rounded-md bg-cyan-400 px-4 text-xs font-semibold text-slate-950">
-          Create project +
-        </button>
-      </div>
-      <div className="mt-8 grid gap-4 sm:grid-cols-3">
-        {[
-          ["Active projects", "12", "+2 this month"],
-          ["Team members", "28", "+4 this month"],
-          ["Weekly activity", "84%", "+12.4%"],
-        ].map(([label, value, delta]) => (
-          <article
-            className="rounded-lg border border-slate-200 bg-white p-5 transition hover:-translate-y-0.5 hover:shadow-md"
-            key={label}
-          >
-            <span className="text-xs font-medium text-slate-500">{label}</span>
-            <strong className="mt-5 block text-2xl font-semibold tracking-tight text-slate-900">
-              {value}
-            </strong>
-            <span className="mt-1 block text-[10px] font-medium text-emerald-600">{delta}</span>
-          </article>
-        ))}
-      </div>
-      <div className="mt-5 grid gap-5 lg:grid-cols-[1.3fr_.7fr]">
-        <article className="rounded-lg border border-slate-200 bg-white">
-          <div className="border-b border-slate-100 px-5 py-4">
-            <h3 className="text-xs font-semibold text-slate-900">Project activity</h3>
-            <p className="mt-1 text-[10px] text-slate-400">Deployments over the last 7 days</p>
-          </div>
-          <div className="flex h-52 items-end gap-3 px-5 pb-5 pt-8">
-            {["h-[42%]", "h-[58%]", "h-[36%]", "h-[76%]", "h-[62%]", "h-[88%]", "h-[70%]"].map(
-              (height, index) => (
-                <div className="flex h-full flex-1 items-end" key={height}>
-                  <div
-                    className={`w-full rounded-t-sm ${height} ${index === 5 ? "bg-cyan-400" : "bg-slate-100"}`}
-                  />
-                </div>
-              ),
-            )}
-          </div>
-        </article>
-        <RecentUpdates />
-      </div>
-    </>
-  );
-}
-
-function ProjectsTarget() {
-  return (
-    <>
-      <div className="flex items-end justify-between">
-        <div>
-          <h2 className="text-3xl font-semibold tracking-[-0.03em] text-slate-900">Projects</h2>
-          <p className="mt-2 text-sm text-slate-500">Manage work across the organization.</p>
-        </div>
-        <button className="rounded-md bg-slate-900 px-4 py-2.5 text-xs font-semibold text-white">
-          New project
-        </button>
-      </div>
-      <div className="mt-8 overflow-hidden rounded-lg border border-slate-200 bg-white">
-        <div className="grid grid-cols-[1fr_120px_100px] border-b border-slate-200 bg-slate-50 px-5 py-3 text-[9px] font-semibold uppercase tracking-wider text-slate-400">
-          <span>Project</span>
-          <span>Status</span>
-          <span>Updated</span>
-        </div>
-        {[
-          ["Billing API", "Production", "8m ago"],
-          ["Atlas Console", "Production", "32m ago"],
-          ["Mobile workspace", "Preview", "1h ago"],
-          ["Data pipeline", "Production", "Yesterday"],
-        ].map(([name, status, time]) => (
-          <a
-            className="grid grid-cols-[1fr_120px_100px] items-center border-b border-slate-100 px-5 py-4 text-xs transition last:border-0 hover:bg-slate-50"
-            href="/admin"
-            key={name}
-          >
-            <span className="flex items-center gap-3 font-semibold text-slate-800">
-              <span className="grid h-8 w-8 place-items-center rounded-md bg-slate-100 font-mono text-[9px]">
-                {name.slice(0, 2).toUpperCase()}
-              </span>
-              {name}
-            </span>
-            <span className="flex items-center gap-2 text-[10px] text-slate-500">
-              <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
-              {status}
-            </span>
-            <span className="font-mono text-[9px] text-slate-400">{time}</span>
-          </a>
-        ))}
-      </div>
-    </>
-  );
-}
-
-function AnalyticsTarget() {
-  return (
-    <>
-      <div>
-        <h2 className="text-3xl font-semibold tracking-[-0.03em] text-slate-900">Analytics</h2>
-        <p className="mt-2 text-sm text-slate-500">Usage and adoption over the last 30 days.</p>
-      </div>
-      <div className="mt-8 grid gap-5 lg:grid-cols-[1fr_280px]">
-        <article className="rounded-lg border border-slate-200 bg-white p-6">
-          <div className="flex items-start justify-between">
-            <div>
-              <p className="text-xs text-slate-500">Total sessions</p>
-              <strong className="mt-2 block text-3xl font-semibold text-slate-900">24,892</strong>
-            </div>
-            <select className="rounded-md border border-slate-200 bg-white px-3 py-2 text-[10px]">
-              <option>Last 30 days</option>
-            </select>
-          </div>
-          <div className="mt-10 flex h-56 items-end gap-2">
-            {[
-              "h-[30%]",
-              "h-[44%]",
-              "h-[38%]",
-              "h-[61%]",
-              "h-[54%]",
-              "h-[76%]",
-              "h-[68%]",
-              "h-[88%]",
-              "h-[74%]",
-              "h-full",
-            ].map((height, index) => (
-              <div className="flex h-full flex-1 items-end" key={height}>
-                <div
-                  className={`w-full rounded-t-sm ${height} ${index === 9 ? "bg-cyan-400" : "bg-slate-100"}`}
-                />
-              </div>
-            ))}
-          </div>
-        </article>
-        <article className="rounded-lg border border-slate-200 bg-[#0d1520] p-6 text-white">
-          <p className="text-xs text-slate-400">Conversion rate</p>
-          <strong className="mt-4 block text-4xl font-semibold">32.8%</strong>
-          <div className="mt-8 grid h-32 place-items-center rounded-full border-[18px] border-cyan-400 border-r-slate-700">
-            <span className="text-xs text-slate-400">+8.2%</span>
-          </div>
-          <p className="mt-8 text-[10px] leading-5 text-slate-500">
-            Compared with the previous reporting period.
-          </p>
-        </article>
-      </div>
-    </>
-  );
-}
-
-function SettingsTarget() {
-  return (
-    <div className="max-w-3xl">
-      <h2 className="text-3xl font-semibold tracking-[-0.03em] text-slate-900">Settings</h2>
-      <p className="mt-2 text-sm text-slate-500">Workspace preferences and access controls.</p>
-      <form className="mt-8 divide-y divide-slate-100 rounded-lg border border-slate-200 bg-white">
-        <label className="grid gap-2 p-5 sm:grid-cols-[180px_1fr]">
-          <span className="text-xs font-semibold text-slate-700">Workspace name</span>
-          <input
-            className="rounded-md border border-slate-200 px-3 py-2 text-xs"
-            defaultValue="Atlas workspace"
-          />
-        </label>
-        <label className="grid gap-2 p-5 sm:grid-cols-[180px_1fr]">
-          <span className="text-xs font-semibold text-slate-700">Default environment</span>
-          <select className="rounded-md border border-slate-200 px-3 py-2 text-xs">
-            <option>Production</option>
-          </select>
-        </label>
-        <div className="flex justify-end p-5">
-          <button
-            className="rounded-md bg-slate-900 px-4 py-2 text-xs font-semibold text-white"
-            type="submit"
-          >
-            Save changes
-          </button>
-        </div>
-      </form>
-    </div>
-  );
-}
-
-function RecentUpdates() {
-  return (
-    <article className="rounded-lg border border-slate-200 bg-white">
-      <div className="border-b border-slate-100 px-5 py-4">
-        <h3 className="text-xs font-semibold text-slate-900">Recent updates</h3>
-        <p className="mt-1 text-[10px] text-slate-400">Across your projects</p>
-      </div>
-      <div className="divide-y divide-slate-100">
-        {[
-          ["Billing API", "8m"],
-          ["Admin console", "32m"],
-          ["Mobile web", "1h"],
-        ].map(([name, time], index) => (
-          <div className="flex items-center gap-3 px-5 py-3.5" key={name}>
-            <span
-              className={`h-2 w-2 rounded-full ${index === 0 ? "bg-emerald-400" : "bg-slate-300"}`}
-            />
-            <span className="flex-1 text-[11px] font-medium text-slate-700">{name}</span>
-            <span className="font-mono text-[9px] text-slate-400">{time}</span>
-          </div>
-        ))}
-      </div>
-    </article>
-  );
-}
-
-function TargetApplication({ route }: { route: ShowcaseRoute }) {
-  const path = route.path.toLowerCase();
-  const content = path.includes("project") ? (
-    <ProjectsTarget />
-  ) : path.includes("analytic") || path.includes("report") ? (
-    <AnalyticsTarget />
-  ) : path.includes("setting") ? (
-    <SettingsTarget />
-  ) : (
-    <DashboardTarget />
-  );
-  const stopPointer = (event: React.SyntheticEvent) => event.stopPropagation();
-  const blockAction = (event: React.SyntheticEvent) => {
-    event.preventDefault();
-    event.stopPropagation();
-  };
-  const blockKeyboardAction = (event: React.KeyboardEvent) => {
-    const target = event.target as HTMLElement;
-    if (
-      (event.key === "Enter" || event.key === " ") &&
-      target.closest("a, button, input, select, textarea")
-    ) {
-      event.preventDefault();
-      event.stopPropagation();
-    }
-  };
+function TargetApplication({ showcase, route }: { showcase: Showcase; route: ShowcaseRoute }) {
+  const source = `/backend-showcase/${encodeURIComponent(showcase.slug)}${route.path}`;
 
   return (
-    <div
-      aria-label="Read-only target application"
-      className="relative min-h-full select-text bg-[#f8f9fb]"
-      onClickCapture={blockAction}
-      onKeyDownCapture={blockKeyboardAction}
-      onPointerDownCapture={stopPointer}
-      onPointerUpCapture={stopPointer}
-      onSubmitCapture={blockAction}
-    >
-      <div className="flex h-14 items-center justify-between border-b border-slate-200 bg-white px-5 sm:px-7">
-        <div className="flex items-center gap-2 font-mono text-[10px] text-slate-400">
-          <span>Atlas</span>
-          <span>/</span>
-          <span className="text-slate-700">{route.title}</span>
-        </div>
-        <div className="flex items-center gap-3">
-          <button className="hidden rounded-md border border-slate-200 px-3 py-2 text-[10px] text-slate-500 sm:block">
-            ⌘ Search
-          </button>
-          <span className="grid h-7 w-7 place-items-center rounded-full bg-slate-900 text-[8px] font-bold text-white">
-            DS
-          </span>
-        </div>
-      </div>
-      <div className="p-5 sm:p-8 lg:p-10">{content}</div>
-    </div>
+    <iframe
+      className="h-full min-h-[520px] w-full border-0 bg-white"
+      key={source}
+      referrerPolicy="no-referrer"
+      sandbox="allow-scripts"
+      src={source}
+      title={`${showcase.name} — ${route.title}`}
+    />
   );
 }
 
@@ -564,7 +303,6 @@ function FullPageError({
 
 export function ShowcaseViewer() {
   const params = useParams<{ slug: string; route?: string[] }>();
-  const search = useSearchParams();
   const [result, setResult] = useState<PrepareState>();
   const [phase, setPhase] = useState(0);
   const [routeLoading, setRouteLoading] = useState(false);
@@ -573,8 +311,6 @@ export function ShowcaseViewer() {
     () => (params.route?.length ? `/${params.route.join("/")}` : undefined),
     [params.route],
   );
-  const forcedState = search.get("state");
-
   useEffect(() => {
     let cancelled = false;
     const isRouteChange = hasLoaded.current;
@@ -586,17 +322,7 @@ export function ShowcaseViewer() {
     const timers = !isRouteChange
       ? [window.setTimeout(() => setPhase(1), 350), window.setTimeout(() => setPhase(2), 750)]
       : [];
-    const request =
-      forcedState === "expired"
-        ? Promise.resolve<PrepareState>({ state: "expired", projectName: "Atlas Console" })
-        : forcedState === "target-unavailable"
-          ? Promise.resolve<PrepareState>({
-              state: "target_unavailable",
-              projectName: "Atlas Console",
-            })
-          : forcedState === "error"
-            ? Promise.resolve<PrepareState>({ state: "error", projectName: "Showcase" })
-            : prepareShowcase(params.slug, requestedPath);
+    const request = prepareShowcase(params.slug, requestedPath);
     Promise.all([
       request,
       new Promise((resolve) => window.setTimeout(resolve, isRouteChange ? 520 : 1150)),
@@ -611,7 +337,7 @@ export function ShowcaseViewer() {
       cancelled = true;
       timers.forEach(window.clearTimeout);
     };
-  }, [forcedState, params.slug, requestedPath]);
+  }, [params.slug, requestedPath]);
 
   if (!result) return <PreparingScreen phase={phase} />;
   if (routeLoading && result.state === "ready") {
@@ -623,7 +349,7 @@ export function ShowcaseViewer() {
     result.state === "target_unavailable" ||
     result.state === "error"
   )
-    return <FullPageError kind={result.state} owner={search.get("owner") === "true"} />;
+    return <FullPageError kind={result.state} owner={false} />;
   if (result.state === "route_unavailable")
     return result.showcase ? (
       <ShowcaseChrome showcase={result.showcase}>
@@ -660,7 +386,7 @@ export function ShowcaseViewer() {
         </p>
       </div>
       <div className="min-h-0 flex-1 overflow-auto">
-        <TargetApplication route={result.activeRoute} />
+        <TargetApplication route={result.activeRoute} showcase={result.showcase} />
       </div>
     </ShowcaseChrome>
   );

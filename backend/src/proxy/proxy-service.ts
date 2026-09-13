@@ -18,6 +18,7 @@ const blockedResponseHeaders = new Set([
   'te', 'trailer', 'transfer-encoding', 'upgrade', 'content-length',
   'content-security-policy', 'content-security-policy-report-only', 'location',
   'content-location', 'refresh', 'link', 'set-cookie2', 'proxy-connection',
+  'x-frame-options',
 ]);
 
 class Semaphore {
@@ -97,6 +98,7 @@ export class ProxyService {
     private readonly authentication: AuthenticationService,
     private readonly http: SecureHttpClient,
     maximumConcurrency: number,
+    private readonly publicProxyPrefix = '/showcase',
   ) {
     this.semaphore = new Semaphore(maximumConcurrency);
   }
@@ -139,13 +141,20 @@ export class ProxyService {
       await this.repository.recordVisit(aggregate.showcase.id, response.status);
       const contentTypeValue = response.headers['content-type'];
       const contentType = Array.isArray(contentTypeValue) ? contentTypeValue[0] ?? '' : contentTypeValue ?? '';
-      const body = rewriteContent(response.body, contentType, response.finalUrl, targetBase.origin, aggregate.showcase.slug);
+      const body = rewriteContent(
+        response.body,
+        contentType,
+        response.finalUrl,
+        targetBase.origin,
+        aggregate.showcase.slug,
+        this.publicProxyPrefix,
+      );
       return {
         status: response.status,
         headers: {
           ...responseHeaders(response),
           'content-length': String(body.length),
-          'content-security-policy': "default-src 'self' data: blob: 'unsafe-inline' 'unsafe-eval'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'",
+          'content-security-policy': "default-src 'self' data: blob: 'unsafe-inline' 'unsafe-eval'; connect-src 'self'; frame-ancestors 'self'; base-uri 'self'",
         },
         body,
       };

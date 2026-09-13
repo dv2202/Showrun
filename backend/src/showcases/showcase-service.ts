@@ -15,7 +15,7 @@ export interface AuthenticationInput {
 export interface CreateShowcaseInput {
   name: string;
   targetUrl: string;
-  mode: 'selected_routes';
+  mode: 'selected_routes' | 'full_application';
   routes: ShowcaseRoute[];
   slug?: string;
   authentication?: AuthenticationInput;
@@ -29,7 +29,10 @@ export interface UpdateShowcaseInput {
   authentication?: AuthenticationInput;
 }
 
-export function creatorShowcase(showcase: Showcase, authenticationConfigured: boolean) {
+export function creatorShowcase(
+  showcase: Showcase,
+  authenticationProvider: AuthenticationProviderKind | null,
+) {
   return {
     id: showcase.id,
     name: showcase.name,
@@ -39,7 +42,8 @@ export function creatorShowcase(showcase: Showcase, authenticationConfigured: bo
     routes: showcase.routes,
     state: showcase.state,
     lastErrorCode: showcase.lastErrorCode,
-    authenticationConfigured,
+    authenticationConfigured: authenticationProvider !== null,
+    authenticationProvider,
     createdAt: showcase.createdAt,
     updatedAt: showcase.updatedAt,
   };
@@ -67,14 +71,9 @@ export class ShowcaseService {
     private readonly repository: ShowcaseRepository,
     private readonly policy: TargetPolicy,
     private readonly encryption: EncryptionService,
-    private readonly userId: string,
   ) {}
 
-  async initializeUser(): Promise<void> {
-    await this.repository.ensureUser(this.userId, 'owner@showcase.local');
-  }
-
-  async create(input: CreateShowcaseInput) {
+  async create(input: CreateShowcaseInput, userId: string) {
     const validated = await this.policy.validate(input.targetUrl);
     await this.validateAuthenticationUrls(input.authentication);
     const routes = this.normalizeRoutes(input.routes);
@@ -83,7 +82,7 @@ export class ShowcaseService {
     for (let attempt = 0; attempt < (requestedSlug ? 1 : 5); attempt += 1) {
       try {
         showcase = await this.repository.createShowcase({
-          userId: this.userId,
+          userId,
           name: input.name,
           slug: requestedSlug ?? this.generateSlug(input.name),
           targetUrl: validated.url.href,
@@ -99,28 +98,28 @@ export class ShowcaseService {
     }
     if (!showcase) throw new AppError('CONFLICT', 'A showcase slug could not be generated', 409);
     if (input.authentication) await this.configureAuthentication(showcase.id, input.authentication);
-    return this.get(showcase.id);
+    return this.get(showcase.id, userId);
   }
 
-  async list() {
-    const showcases = await this.repository.listShowcases(this.userId);
+  async list(userId: string) {
+    const showcases = await this.repository.listShowcases(userId);
     return Promise.all(showcases.map(async (showcase) => {
       const aggregate = await this.repository.getShowcaseById(showcase.id);
-      return creatorShowcase(showcase, Boolean(aggregate?.authentication));
+      return creatorShowcase(showcase, aggregate?.authentication?.provider ?? null);
     }));
   }
 
-  async get(id: string) {
+  async get(id: string, userId: string) {
     const aggregate = await this.repository.getShowcaseById(id);
-    if (!aggregate || aggregate.showcase.userId !== this.userId) {
+    if (!aggregate || aggregate.showcase.userId !== userId) {
       throw new AppError('NOT_FOUND', 'Showcase not found', 404);
     }
-    return creatorShowcase(aggregate.showcase, Boolean(aggregate.authentication));
+    return creatorShowcase(aggregate.showcase, aggregate.authentication?.provider ?? null);
   }
 
-  async update(id: string, input: UpdateShowcaseInput) {
+  async update(id: string, input: UpdateShowcaseInput, userId: string) {
     const aggregate = await this.repository.getShowcaseById(id);
-    if (!aggregate || aggregate.showcase.userId !== this.userId) {
+    if (!aggregate || aggregate.showcase.userId !== userId) {
       throw new AppError('NOT_FOUND', 'Showcase not found', 404);
     }
     await this.validateAuthenticationUrls(input.authentication);
@@ -147,12 +146,12 @@ export class ShowcaseService {
       if (error instanceof AppError) throw error;
       throw new AppError('CONFLICT', 'The showcase could not be updated', 409, { cause: error });
     }
-    return this.get(id);
+    return this.get(id, userId);
   }
 
-  async delete(id: string): Promise<void> {
+  async delete(id: string, userId: string): Promise<void> {
     const aggregate = await this.repository.getShowcaseById(id);
-    if (!aggregate || aggregate.showcase.userId !== this.userId) {
+    if (!aggregate || aggregate.showcase.userId !== userId) {
       throw new AppError('NOT_FOUND', 'Showcase not found', 404);
     }
     await this.repository.deleteShowcase(id);

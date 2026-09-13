@@ -4,11 +4,13 @@ Showrun is a developer-focused platform for turning private web applications int
 
 ## Project structure
 
-- `frontend/` — Next.js 15 and React 19 showcase/dashboard UI
+- `frontend/` — Next.js 16 and React 19 showcase/dashboard UI
 - `backend/` — Fastify API, authentication bootstrap, route policy, secure proxy, and PostgreSQL persistence
 - `backend/migrations/` — PostgreSQL schema migrations
 
-The frontend currently uses in-memory mock showcase data in `frontend/services/showcases.ts`. Backend integration is the next connection point.
+The frontend uses the backend API for creator accounts, showcase configuration, authentication
+preparation, and proxied target rendering. Proxied target pages are isolated in a sandboxed iframe;
+the backend enforces route policy and read-only methods.
 
 ## Requirements
 
@@ -19,14 +21,12 @@ The frontend currently uses in-memory mock showcase data in `frontend/services/s
 
 ## Installation
 
-Install each application's dependencies:
+Install the root development launcher and each application's dependencies:
 
 ```bash
-cd backend
 npm install
-
-cd ../frontend
-npm install
+npm --prefix backend install
+npm --prefix frontend install
 ```
 
 ## Backend setup
@@ -34,32 +34,34 @@ npm install
 Create the local environment file:
 
 ```bash
-cd backend
-cp .env.example .env
+cp backend/.env.example backend/.env
 ```
 
-Set `DATABASE_URL`, generate an encryption key with `openssl rand -base64 32`, and set a random `ADMIN_API_TOKEN` of at least 24 characters. Then install Chromium, migrate the database, and start the API:
+Set `DATABASE_URL` and generate an encryption key with `openssl rand -base64 32`. Then install Chromium and migrate the database:
+
+`frontend/.env`'s `BACKEND_URL` only tells Next.js where to proxy API requests. The backend loads
+`DATABASE_URL` and `ENCRYPTION_KEY` from `backend/.env` when running development and migrations.
 
 ```bash
-npm run playwright:install
-npm run db:migrate
+npm --prefix backend run playwright:install
+npm --prefix backend run db:migrate
+```
+
+The default backend address is `http://127.0.0.1:4000`. Creator endpoints require the HttpOnly session cookie issued after email or OAuth login.
+
+See [backend/README.md](backend/README.md) for the API, authentication payloads, security properties, and current limitations.
+Use the [manual end-to-end checklist](docs/manual-e2e.md) with a staging target before sharing a
+showcase publicly.
+
+## Development
+
+Start the backend (with nodemon) and frontend together from the repository root:
+
+```bash
 npm run dev
 ```
 
-The default backend address is `http://127.0.0.1:3000`. Creator endpoints require `Authorization: Bearer <ADMIN_API_TOKEN>`.
-
-See [backend/README.md](backend/README.md) for the API, authentication payloads, security properties, and current limitations.
-
-## Frontend setup
-
-Start the Next.js development server from a second terminal. Port `3001` avoids conflicting with the backend's default port:
-
-```bash
-cd frontend
-npm run dev -- --port 3001
-```
-
-Open `http://localhost:3001`.
+Open `http://localhost:3000`. The backend listens on `http://127.0.0.1:4000` by default.
 
 ## Verification
 

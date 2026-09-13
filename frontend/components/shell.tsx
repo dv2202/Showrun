@@ -1,4 +1,9 @@
+"use client";
+
 import Link from "next/link";
+import { usePathname, useRouter } from "next/navigation";
+import { useEffect } from "react";
+import { useAuth } from "@/components/auth-provider";
 import { Icon, type IconName } from "@/components/ui";
 
 export function Brand({ inverse = false }: { inverse?: boolean }) {
@@ -21,8 +26,6 @@ export function Brand({ inverse = false }: { inverse?: boolean }) {
 const navigation: { label: string; href: string; icon: IconName }[] = [
   { label: "Overview", href: "/dashboard", icon: "grid" },
   { label: "Showcases", href: "/dashboard#showcases", icon: "stack" },
-  { label: "Activity", href: "/dashboard#activity", icon: "pulse" },
-  { label: "Settings", href: "/dashboard#settings", icon: "settings" },
 ];
 
 export function DashboardShell({
@@ -32,6 +35,34 @@ export function DashboardShell({
   children: React.ReactNode;
   active?: string;
 }) {
+  const { user, loading, logout } = useAuth();
+  const pathname = usePathname();
+  const router = useRouter();
+
+  useEffect(() => {
+    if (!loading && !user) {
+      router.replace(`/login?returnTo=${encodeURIComponent(pathname)}`);
+    }
+  }, [loading, pathname, router, user]);
+
+  if (loading || !user) {
+    return (
+      <div className="grid min-h-screen place-items-center bg-canvas" role="status">
+        <div className="text-center">
+          <span className="mx-auto block h-7 w-7 animate-spin rounded-full border-2 border-black/15 border-t-black" />
+          <p className="mt-4 text-xs font-medium text-zinc-500">Loading workspace…</p>
+        </div>
+      </div>
+    );
+  }
+
+  const initials = user.name
+    .split(/\s+/)
+    .map((part) => part[0])
+    .join("")
+    .slice(0, 2)
+    .toUpperCase();
+
   return (
     <div className="min-h-screen bg-canvas lg:grid lg:grid-cols-[248px_minmax(0,1fr)]">
       <aside className="hidden border-r border-black/10 bg-[#111310] text-white lg:sticky lg:top-0 lg:flex lg:h-screen lg:flex-col">
@@ -58,16 +89,20 @@ export function DashboardShell({
         <div className="mt-auto border-t border-white/10 p-4">
           <button
             className="flex w-full items-center gap-3 p-2 text-left transition hover:bg-white/5"
+            onClick={async () => {
+              await logout();
+              router.replace("/login");
+            }}
             type="button"
           >
             <span className="grid h-8 w-8 place-items-center bg-signal text-xs font-bold text-black">
-              DS
+              {initials}
             </span>
             <span className="min-w-0 flex-1">
-              <span className="block truncate text-xs font-semibold">Devansh’s workspace</span>
-              <span className="block text-[11px] text-zinc-500">Pro plan · 3 projects</span>
+              <span className="block truncate text-xs font-semibold">{user.name}</span>
+              <span className="block truncate text-[11px] text-zinc-500">{user.email}</span>
             </span>
-            <Icon className="h-3.5 w-3.5 text-zinc-500" name="chevron" />
+            <span className="text-[10px] font-medium text-zinc-500">Sign out</span>
           </button>
         </div>
       </aside>
