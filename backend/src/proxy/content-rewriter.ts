@@ -1,7 +1,7 @@
 import * as cheerio from 'cheerio';
-import type { StorageAuthBridge } from '../domain/types.js';
+import type { SessionTokenLocation } from '../domain/types.js';
 
-const PUBLIC_AUTH_PLACEHOLDER =
+export const PUBLIC_SESSION_PLACEHOLDER =
   'eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJzdWIiOiJzaG93cnVuLXB1YmxpYyIsImV4cCI6NDEwMjQ0NDgwMH0.';
 
 function scriptValue(value: string): string {
@@ -13,15 +13,15 @@ function runtimeBootstrap(
   targetOrigin: string,
   slug: string,
   publicProxyPrefix: string,
-  storageBridge?: StorageAuthBridge,
+  sessionToken?: SessionTokenLocation,
 ): string {
   const proxyBase = `${publicProxyPrefix.replace(/\/$/, '')}/${encodeURIComponent(slug)}`;
   return `(() => {
   const proxyBase = ${scriptValue(proxyBase)};
   const targetDocument = ${scriptValue(documentUrl.href)};
   const targetOrigin = ${scriptValue(targetOrigin)};
-  const bridgeKey = ${storageBridge ? scriptValue(storageBridge.key) : 'null'};
-  const bridgeValue = ${storageBridge ? scriptValue(PUBLIC_AUTH_PLACEHOLDER) : 'null'};
+  const bridgeKey = ${sessionToken?.storage === 'localStorage' ? scriptValue(sessionToken.name) : 'null'};
+  const bridgeValue = ${sessionToken?.storage === 'localStorage' ? scriptValue(PUBLIC_SESSION_PLACEHOLDER) : 'null'};
   if (bridgeKey) {
     const values = new Map([[bridgeKey, bridgeValue]]);
     const storage = {
@@ -136,7 +136,7 @@ export function rewriteContent(
   targetOrigin: string,
   slug: string,
   publicProxyPrefix = '/showcase',
-  storageBridge?: StorageAuthBridge,
+  sessionToken?: SessionTokenLocation,
 ): Buffer {
   if (contentType.includes('text/css')) {
     return Buffer.from(
@@ -187,7 +187,7 @@ export function rewriteContent(
       targetOrigin,
       slug,
       publicProxyPrefix,
-      storageBridge,
+      sessionToken,
     )}</script>`,
   );
   return Buffer.from($.html());

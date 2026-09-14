@@ -15,11 +15,9 @@ const verificationSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('absence_of_login_selector'), selector: z.string().min(1).max(500) }),
 ]);
 
-const storageAuthBridgeSchema = z.object({
-  storage: z.literal('localStorage'),
-  key: z.string().min(1).max(200).regex(/^[^\x00-\x1f\x7f]+$/),
-  headerName: z.enum(['authorization', 'x-api-key']),
-  prefix: z.string().max(50).regex(/^[^\r\n]*$/).default(''),
+const sessionTokenLocationSchema = z.object({
+  storage: z.enum(['cookie', 'localStorage']),
+  name: z.string().min(1).max(200).regex(/^[^\x00-\x1f\x7f;,]+$/),
 });
 
 const passwordConfigSchema = z.object({
@@ -29,7 +27,7 @@ const passwordConfigSchema = z.object({
   submitSelector: z.string().min(1).max(500),
   verification: verificationSchema,
   timeoutMs: z.number().int().min(1000).max(60_000).optional(),
-  storageBridge: storageAuthBridgeSchema.optional(),
+  sessionToken: sessionTokenLocationSchema.optional(),
 });
 const passwordSecretSchema = z.object({ username: z.string().min(1), password: z.string().min(1) });
 
@@ -41,16 +39,17 @@ export class PasswordAuthProvider implements AuthenticationProvider {
     const parsedConfig = passwordConfigSchema.parse(config);
     const parsedSecret = passwordSecretSchema.parse(secret);
     const material = await this.browser.authenticate(parsedConfig, parsedSecret);
-    if (parsedConfig.storageBridge) {
-      const captured = material.origins?.some((origin) =>
-        origin.localStorage.some((item) =>
-          item.name === parsedConfig.storageBridge!.key && item.value.length > 0,
-        ),
-      );
+    if (parsedConfig.sessionToken) {
+      const { storage, name } = parsedConfig.sessionToken;
+      const captured = storage === 'cookie'
+        ? material.cookies?.some((cookie) => cookie.name === name && cookie.value.length > 0)
+        : material.origins?.some((origin) =>
+          origin.localStorage.some((item) => item.name === name && item.value.length > 0),
+        );
       if (!captured) {
         throw new AppError(
           'AUTHENTICATION_FAILED',
-          `Login succeeded, but localStorage key "${parsedConfig.storageBridge.key}" was not found`,
+          `Login succeeded, but ${storage} entry "${name}" was not found`,
           422,
         );
       }

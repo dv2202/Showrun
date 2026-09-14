@@ -1,11 +1,11 @@
 import type { FastifyRequest } from 'fastify';
 import { promisify } from 'node:util';
 import { brotliDecompress, gunzip, inflate } from 'node:zlib';
-import type { SessionMaterial, ShowcaseAggregate, StorageAuthBridge } from '../domain/types.js';
+import type { SessionMaterial, SessionTokenLocation, ShowcaseAggregate } from '../domain/types.js';
 import { AppError } from '../errors.js';
 import { AuthenticationService } from '../auth/authentication-service.js';
 import type { ShowcaseRepository } from '../storage/repository.js';
-import { rewriteContent } from './content-rewriter.js';
+import { PUBLIC_SESSION_PLACEHOLDER, rewriteContent } from './content-rewriter.js';
 import { SecureHttpClient, type SecureHttpResponse } from './secure-http-client.js';
 import { assertRequestAllowed, normalizeRequestedSuffix } from '../showcases/route-policy.js';
 
@@ -79,27 +79,25 @@ function cookieHeader(material: SessionMaterial, url: URL): string | undefined {
   return values.length ? values.join('; ') : undefined;
 }
 
-function configuredStorageBridge(aggregate: ShowcaseAggregate): StorageAuthBridge | undefined {
+function configuredSessionToken(aggregate: ShowcaseAggregate): SessionTokenLocation | undefined {
   if (aggregate.authentication?.provider !== 'password') return undefined;
-  const value = aggregate.authentication.config.storageBridge;
+  const value = aggregate.authentication.config.sessionToken;
   if (!value || typeof value !== 'object') return undefined;
   const candidate = value as Record<string, unknown>;
-  if (candidate.storage !== 'localStorage' || typeof candidate.key !== 'string' ||
-    !['authorization', 'x-api-key'].includes(String(candidate.headerName)) ||
-    (candidate.prefix !== undefined && typeof candidate.prefix !== 'string')) return undefined;
+  if (!['cookie', 'localStorage'].includes(String(candidate.storage)) ||
+    typeof candidate.name !== 'string') return undefined;
   return {
-    storage: 'localStorage',
-    key: candidate.key,
-    headerName: candidate.headerName as StorageAuthBridge['headerName'],
-    prefix: typeof candidate.prefix === 'string' ? candidate.prefix : '',
+    storage: candidate.storage as SessionTokenLocation['storage'],
+    name: candidate.name,
   };
 }
 
-function bridgedStorageValue(
+function localStorageTokenValue(
   material: SessionMaterial,
   targetOrigin: string,
-  bridge: StorageAuthBridge,
+  location: SessionTokenLocation,
 ): string | undefined {
+  if (location.storage !== 'localStorage') return undefined;
   const origin = material.origins?.find((entry) => {
     try {
       return new URL(entry.origin).origin === targetOrigin;
@@ -107,7 +105,31 @@ function bridgedStorageValue(
       return false;
     }
   });
-  return origin?.localStorage.find((item) => item.name === bridge.key)?.value;
+  return origin?.localStorage.find((item) => item.name === location.name)?.value;
+}
+
+function containsSessionPlaceholder(value: string | string[] | undefined): boolean {
+  return Array.isArray(value)
+    ? value.some((item) => item.includes(PUBLIC_SESSION_PLACEHOLDER))
+    : value?.includes(PUBLIC_SESSION_PLACEHOLDER) === true;
+}
+
+function substitutedSessionHeaders(
+  request: FastifyRequest,
+  token: string,
+): Record<string, string | string[]> {
+  const headers: Record<string, string | string[]> = {};
+  for (const [key, value] of Object.entries(request.headers)) {
+    if (!containsSessionPlaceholder(value)) continue;
+    const lower = key.toLowerCase();
+    const allowed = lower === 'authorization' ||
+      (!blockedRequestHeaders.has(lower) && !lower.startsWith('x-forwarded-') && lower !== 'x-real-ip');
+    if (!allowed || value === undefined) continue;
+    headers[key] = Array.isArray(value)
+      ? value.map((item) => item.replaceAll(PUBLIC_SESSION_PLACEHOLDER, token))
+      : value.replaceAll(PUBLIC_SESSION_PLACEHOLDER, token);
+  }
+  return headers;
 }
 
 function requestHeaders(request: FastifyRequest): Record<string, string | string[] | undefined> {
@@ -118,7 +140,8 @@ function requestHeaders(request: FastifyRequest): Record<string, string | string
   for (const [key, value] of Object.entries(request.headers)) {
     const lower = key.toLowerCase();
     if (!blockedRequestHeaders.has(lower) && !connectionHeaders.has(lower) &&
-      !lower.startsWith('x-forwarded-') && lower !== 'x-real-ip' && value !== undefined) headers[key] = value;
+      !lower.startsWith('x-forwarded-') && lower !== 'x-real-ip' && value !== undefined &&
+      !containsSessionPlaceholder(value)) headers[key] = value;
   }
   return headers;
 }
@@ -177,16 +200,19 @@ export class ProxyService {
       const material = await this.authentication.activeMaterial(aggregate.showcase.id);
       if (!material) throw new AppError('AUTHENTICATION_EXPIRED', 'Showcase authentication is required', 401);
       const targetBase = new URL(aggregate.showcase.targetUrl);
-      const storageBridge = configuredStorageBridge(aggregate);
-      const bridgedValue = storageBridge
-        ? bridgedStorageValue(material, targetBase.origin, storageBridge)
+      const sessionToken = configuredSessionToken(aggregate);
+      const localStorageToken = sessionToken
+        ? localStorageTokenValue(material, targetBase.origin, sessionToken)
         : undefined;
-      if (storageBridge && !bridgedValue) {
+      if (sessionToken?.storage === 'localStorage' && !localStorageToken) {
         throw new AppError(
           'AUTHENTICATION_EXPIRED',
-          `The captured session does not contain localStorage key "${storageBridge.key}"`,
+          `The captured session does not contain localStorage entry "${sessionToken.name}"`,
           401,
         );
+      }
+      if (localStorageToken && /[\r\n]/.test(localStorageToken)) {
+        throw new AppError('AUTHENTICATION_FAILED', 'The captured session token is invalid', 422);
       }
       const target = new URL(targetBase);
       const basePath = targetBase.pathname.endsWith('/') ? targetBase.pathname : `${targetBase.pathname}/`;
@@ -209,8 +235,8 @@ export class ProxyService {
           if (cookie) headers.cookie = cookie;
           if (url.origin === targetBase.origin) {
             Object.assign(headers, material.headers ?? {});
-            if (storageBridge && bridgedValue) {
-              headers[storageBridge.headerName] = `${storageBridge.prefix}${bridgedValue}`;
+            if (localStorageToken) {
+              Object.assign(headers, substitutedSessionHeaders(request, localStorageToken));
             }
           }
           return headers;
@@ -232,7 +258,7 @@ export class ProxyService {
         targetBase.origin,
         aggregate.showcase.slug,
         this.publicProxyPrefix,
-        storageBridge,
+        sessionToken,
       );
       return {
         status: response.status,

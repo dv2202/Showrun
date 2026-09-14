@@ -11,11 +11,9 @@ export type AuthenticationProviderKind = 'token' | 'password' | 'manual_session'
 export type ShowcaseMode = 'selected_routes' | 'full_application';
 export type CreatorProvider = 'github' | 'google';
 
-export interface StorageAuthBridge {
-  storage: 'localStorage';
-  key: string;
-  headerName: 'authorization' | 'x-api-key';
-  prefix: string;
+export interface SessionTokenLocation {
+  storage: 'cookie' | 'localStorage';
+  name: string;
 }
 
 export interface ShowcaseRoute {

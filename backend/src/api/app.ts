@@ -249,11 +249,19 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
       aggregate.showcase.routes,
       aggregate.showcase.dependencies,
     );
+    const requestedHeaderValue = request.headers['access-control-request-headers'];
+    const requestedHeaders = (Array.isArray(requestedHeaderValue)
+      ? requestedHeaderValue.join(',')
+      : requestedHeaderValue ?? '')
+      .split(',')
+      .map((header) => header.trim().toLowerCase())
+      .filter((header) => /^[a-z0-9!#$%&'*+.^_`|~-]+$/.test(header))
+      .filter((header) => !['cookie', 'host', 'connection', 'content-length'].includes(header));
     return reply
       .headers({
         'access-control-allow-origin': '*',
         'access-control-allow-methods': 'GET, HEAD, OPTIONS',
-        'access-control-allow-headers': 'authorization, x-api-key, content-type, accept',
+        'access-control-allow-headers': requestedHeaders.join(', ') || 'content-type',
         'access-control-max-age': '600',
       })
       .code(204)

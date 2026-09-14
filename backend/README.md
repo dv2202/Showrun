@@ -97,11 +97,9 @@ Create/configure authentication in this shape:
       "usernameSelector": "#email",
       "passwordSelector": "#password",
       "submitSelector": "button[type=submit]",
-      "storageBridge": {
+      "sessionToken": {
         "storage": "localStorage",
-        "key": "access_token",
-        "headerName": "authorization",
-        "prefix": "Bearer "
+        "name": "access_token"
       },
       "verification": { "type": "expected_selector", "selector": "[data-user-menu]" }
     },
@@ -116,10 +114,11 @@ For the common password flow, `username` and `password` may instead be supplied 
 
 Verification also supports `expected_url`, `authenticated_endpoint`, and `absence_of_login_selector`. Secrets and captured session material are encrypted before persistence. Public responses never contain target URLs, provider details, credentials, tokens, cookies, or Playwright state.
 
-`storageBridge` is optional and intended for applications whose frontend checks a direct token value
-in `localStorage`. The creator supplies only the key and outgoing header mapping. Showrun captures the
-real value after login, keeps it encrypted server-side, gives the sandbox a non-secret placeholder,
-and substitutes the real value only on approved upstream reads.
+`sessionToken` identifies either a cookie name or a direct token key in `localStorage`. The creator
+supplies only the storage type and name. Showrun captures the real value after login and keeps it
+encrypted server-side. For localStorage, the sandbox receives a non-secret placeholder; the target
+application chooses its own request header and format, and Showrun substitutes only that placeholder
+on approved upstream reads.
 
 After creating a showcase, `POST /api/showcases/:id/scan-dependencies` performs a creator-only,
 authenticated browser scan of the explicitly configured pages. Same-origin static scripts, styles,
@@ -145,7 +144,7 @@ API requests are saved as unapproved candidates and can be approved with
 
 - WebSocket applications are explicitly unsupported.
 - Rewriting covers HTML `href`, `src`, `action`, `poster`, `srcset`, inline/style-block CSS URLs, and CSS responses. JavaScript string rewriting, streaming responses, downloads larger than the configured response cap, signed absolute URLs, and complex CSP-dependent applications are not supported.
-- Direct token values in `localStorage` are supported through the explicit storage bridge. Serialized
+- Direct token values in `localStorage` are supported through the explicit session bridge. Serialized
   objects, nested token fields, rotating browser-side refresh flows, IndexedDB, and sessionStorage are
   not yet supported.
 - Developers explicitly configure every navigable page. Supporting same-origin dependencies are

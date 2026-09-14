@@ -7,8 +7,8 @@ dedicated, least-privilege test account and non-production data.
 
 - Use an HTTPS target that the Showrun backend can reach over the public internet. Loopback,
   private-network, link-local, and metadata addresses are intentionally blocked by SSRF protection.
-- Determine whether login uses cookies or a direct token value in localStorage. For localStorage,
-  record the key name, outgoing header name, and header prefix; never copy the token value itself.
+- Determine whether login uses cookies or a direct token value in localStorage, then record only the
+  cookie name or localStorage key. Never copy the session value itself.
 - Disable CAPTCHA or interactive MFA for the dedicated staging account.
 - Record the login URL and stable CSS selectors for the username field, password field, submit
   control, and an element visible only after successful login.
@@ -29,7 +29,7 @@ Open `http://localhost:3000`, create or sign in to a creator account, and choose
 ## 3. Create and prepare a showcase
 
 1. Enter the staging application URL, dedicated account credentials, login URL, and selectors. If
-   needed, enable the localStorage bridge and enter its non-secret key/header mapping.
+   needed, select localStorage and enter its non-secret key name.
 2. Choose the showcase mode and explicitly enter the permitted routes.
 3. Create the showcase, open its project page, and choose **Scan & publish**.
 4. Review any detected API/data dependencies and approve only the reads needed by the showcase.

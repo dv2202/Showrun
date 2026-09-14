@@ -15,11 +15,9 @@ export interface ShowcaseLoginConfiguration {
   passwordSelector: string;
   submitSelector: string;
   authenticatedSelector: string;
-  storageBridge?: {
-    storage: "localStorage";
-    key: string;
-    headerName: "authorization" | "x-api-key";
-    prefix: string;
+  sessionToken?: {
+    storage: "cookie" | "localStorage";
+    name: string;
   };
 }
 

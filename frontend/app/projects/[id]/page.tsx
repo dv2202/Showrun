@@ -176,13 +176,26 @@ export default function ProjectDetail() {
                 </p>
               </div>
               <button
-                className="inline-flex h-9 shrink-0 items-center justify-center gap-2 bg-ink px-3 text-xs font-semibold text-white transition hover:bg-zinc-700 disabled:cursor-not-allowed disabled:opacity-50"
+                className="group inline-flex h-11 w-full shrink-0 items-center justify-center gap-2.5 border border-ink bg-signal px-4 text-xs font-bold text-ink shadow-[3px_3px_0_0_#181a17] transition-[transform,box-shadow,background-color] hover:-translate-y-0.5 hover:bg-[#e1ff89] hover:shadow-[4px_4px_0_0_#181a17] active:translate-x-[2px] active:translate-y-[2px] active:shadow-none disabled:translate-x-0 disabled:translate-y-0 disabled:cursor-not-allowed disabled:bg-zinc-200 disabled:text-zinc-500 disabled:shadow-none sm:w-auto"
                 disabled={scanning}
                 onClick={scanDependencies}
                 type="button"
               >
-                <Icon className={scanning ? "animate-spin" : ""} name="pulse" />
-                {scanning ? "Scanning…" : project.dependencies.length ? "Rescan" : "Scan & publish"}
+                <span
+                  aria-hidden="true"
+                  className={
+                    scanning
+                      ? "grid h-5 w-5 shrink-0 animate-pulse place-items-center"
+                      : "grid h-5 w-5 shrink-0 place-items-center"
+                  }
+                >
+                  <Icon className="h-4 w-4" name="scan" />
+                </span>
+                {scanning
+                  ? "Scanning resources…"
+                  : project.dependencies.length
+                    ? "Scan & republish"
+                    : "Scan & publish"}
               </button>
             </div>
 

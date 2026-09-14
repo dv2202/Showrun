@@ -48,7 +48,7 @@ function editableAuthenticationConfig(authentication: AuthenticationConfig | nul
     'timeoutMs',
     'expireOn403',
     'unauthenticatedMarker',
-    'storageBridge',
+    'sessionToken',
   ]) {
     if (source[key] !== undefined) config[key] = source[key];
   }

@@ -25,11 +25,9 @@ const loginVerificationSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('absence_of_login_selector'), selector: z.string().min(1).max(500) }),
 ]);
 
-const storageAuthBridgeSchema = z.object({
-  storage: z.literal('localStorage'),
-  key: z.string().min(1).max(200).regex(/^[^\x00-\x1f\x7f]+$/),
-  headerName: z.enum(['authorization', 'x-api-key']),
-  prefix: z.string().max(50).regex(/^[^\r\n]*$/).default(''),
+const sessionTokenLocationSchema = z.object({
+  storage: z.enum(['cookie', 'localStorage']),
+  name: z.string().min(1).max(200).regex(/^[^\x00-\x1f\x7f;,]+$/),
 });
 
 const loginConfigurationSchema = z.object({
@@ -41,7 +39,7 @@ const loginConfigurationSchema = z.object({
   timeoutMs: z.number().int().min(1000).max(60_000).optional(),
   expireOn403: z.boolean().optional(),
   unauthenticatedMarker: z.string().min(1).max(1000).optional(),
-  storageBridge: storageAuthBridgeSchema.optional(),
+  sessionToken: sessionTokenLocationSchema.optional(),
 });
 
 export const createShowcaseSchema = z.object({

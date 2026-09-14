@@ -36,12 +36,8 @@ export default function EditProject() {
   const [passwordSelector, setPasswordSelector] = useState("");
   const [submitSelector, setSubmitSelector] = useState("");
   const [authenticatedSelector, setAuthenticatedSelector] = useState("");
-  const [usesStorageBridge, setUsesStorageBridge] = useState(false);
-  const [storageKey, setStorageKey] = useState("");
-  const [authHeaderName, setAuthHeaderName] = useState<"authorization" | "x-api-key">(
-    "authorization",
-  );
-  const [authHeaderPrefix, setAuthHeaderPrefix] = useState("Bearer ");
+  const [sessionStorageType, setSessionStorageType] = useState<"cookie" | "localStorage">("cookie");
+  const [sessionName, setSessionName] = useState("");
   const [mode, setMode] = useState<ShowcaseMode>("selected_routes");
   const [routes, setRoutes] = useState<ShowcaseRoute[]>([]);
   const [attempted, setAttempted] = useState(false);
@@ -66,11 +62,9 @@ export default function EditProject() {
           setPasswordSelector(result.login.passwordSelector);
           setSubmitSelector(result.login.submitSelector);
           setAuthenticatedSelector(result.login.authenticatedSelector);
-          if (result.login.storageBridge) {
-            setUsesStorageBridge(true);
-            setStorageKey(result.login.storageBridge.key);
-            setAuthHeaderName(result.login.storageBridge.headerName);
-            setAuthHeaderPrefix(result.login.storageBridge.prefix);
+          if (result.login.sessionToken) {
+            setSessionStorageType(result.login.sessionToken.storage);
+            setSessionName(result.login.sessionToken.name);
           }
         }
       })
@@ -86,7 +80,7 @@ export default function EditProject() {
     passwordSelector.trim() &&
     submitSelector.trim() &&
     authenticatedSelector.trim() &&
-    (!usesStorageBridge || storageKey.trim()),
+    sessionName.trim(),
   );
   const credentialsValid = project?.authenticationConfigured
     ? (!username && !password) || Boolean(username.trim() && password)
@@ -137,16 +131,10 @@ export default function EditProject() {
       passwordSelector,
       submitSelector,
       authenticatedSelector,
-      ...(usesStorageBridge
-        ? {
-            storageBridge: {
-              storage: "localStorage" as const,
-              key: storageKey.trim(),
-              headerName: authHeaderName,
-              prefix: authHeaderPrefix,
-            },
-          }
-        : {}),
+      sessionToken: {
+        storage: sessionStorageType,
+        name: sessionName.trim(),
+      },
     };
     const loginChanged = JSON.stringify(login) !== JSON.stringify(project.login);
     const routesChanged =
@@ -420,70 +408,57 @@ export default function EditProject() {
                           ))}
                         </div>
                         <div className="border border-black/10 bg-zinc-50 p-4">
-                          <label className="flex cursor-pointer items-start gap-3">
-                            <input
-                              checked={usesStorageBridge}
-                              className="mt-0.5 h-4 w-4 accent-black"
-                              onChange={(event) => setUsesStorageBridge(event.target.checked)}
-                              type="checkbox"
-                            />
-                            <span>
-                              <span className="block text-xs font-semibold">
-                                The app keeps its session token in localStorage
+                          <h3 className="text-xs font-semibold">Session storage</h3>
+                          <p className="mt-1 text-[11px] leading-4 text-zinc-500">
+                            Tell Showrun where the target stores its session and the entry name.
+                            Never paste the cookie or token value.
+                          </p>
+                          <div className="mt-4 grid gap-4 sm:grid-cols-2">
+                            <label className="block">
+                              <span className="mb-2 block text-xs font-semibold">Stored in</span>
+                              <select
+                                className={inputClass}
+                                onChange={(event) =>
+                                  setSessionStorageType(
+                                    event.target.value as "cookie" | "localStorage",
+                                  )
+                                }
+                                value={sessionStorageType}
+                              >
+                                <option value="cookie">Cookie</option>
+                                <option value="localStorage">localStorage</option>
+                              </select>
+                            </label>
+                            <label className="block">
+                              <span className="mb-2 block text-xs font-semibold">
+                                {sessionStorageType === "cookie"
+                                  ? "Cookie name"
+                                  : "localStorage key"}
                               </span>
-                              <span className="mt-1 block text-[11px] leading-4 text-zinc-500">
-                                The public iframe receives a non-secret placeholder. Showrun adds
-                                the captured token only while proxying approved API requests.
-                              </span>
-                            </span>
-                          </label>
-                          {usesStorageBridge && (
-                            <div className="mt-4 grid gap-4 sm:grid-cols-2">
-                              <label className="block sm:col-span-2">
-                                <span className="mb-2 block text-xs font-semibold">
-                                  localStorage key
-                                </span>
-                                <input
-                                  aria-invalid={attempted && !storageKey.trim()}
-                                  className={`${inputClass} font-mono text-xs ${attempted && !storageKey.trim() ? "border-red-500 ring-1 ring-red-500" : ""}`}
-                                  onChange={(event) => setStorageKey(event.target.value)}
-                                  placeholder="e.g. access_token"
-                                  value={storageKey}
-                                />
-                              </label>
-                              <label className="block">
-                                <span className="mb-2 block text-xs font-semibold">API header</span>
-                                <select
-                                  className={inputClass}
-                                  onChange={(event) =>
-                                    setAuthHeaderName(
-                                      event.target.value as "authorization" | "x-api-key",
-                                    )
-                                  }
-                                  value={authHeaderName}
-                                >
-                                  <option value="authorization">Authorization</option>
-                                  <option value="x-api-key">X-API-Key</option>
-                                </select>
-                              </label>
-                              <label className="block">
-                                <span className="mb-2 block text-xs font-semibold">
-                                  Header prefix
-                                </span>
-                                <input
-                                  className={`${inputClass} font-mono text-xs`}
-                                  onChange={(event) => setAuthHeaderPrefix(event.target.value)}
-                                  placeholder="Bearer "
-                                  value={authHeaderPrefix}
-                                />
-                              </label>
-                            </div>
+                              <input
+                                aria-invalid={attempted && !sessionName.trim()}
+                                className={`${inputClass} font-mono text-xs ${attempted && !sessionName.trim() ? "border-red-500 ring-1 ring-red-500" : ""}`}
+                                onChange={(event) => setSessionName(event.target.value)}
+                                placeholder={
+                                  sessionStorageType === "cookie"
+                                    ? "e.g. session"
+                                    : "e.g. access_token"
+                                }
+                                value={sessionName}
+                              />
+                            </label>
+                          </div>
+                          {sessionStorageType === "localStorage" && (
+                            <p className="mt-3 text-[11px] leading-4 text-emerald-700">
+                              The application&apos;s own request determines the header and format;
+                              Showrun substitutes only its placeholder value.
+                            </p>
                           )}
                         </div>
                       </div>
                       {attempted && !loginMappingValid && (
                         <p className="mt-3 text-[11px] text-red-600">
-                          Complete the HTTPS login URL and all four selectors.
+                          Complete the login URL, selectors, and session storage details.
                         </p>
                       )}
                     </div>

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { gzipSync } from 'node:zlib';
 import { buildApp } from '../src/api/app.js';
 import type { AuthenticationProvider } from '../src/auth/providers.js';
+import { PUBLIC_SESSION_PLACEHOLDER } from '../src/proxy/content-rewriter.js';
 import { SecureHttpClient, type SecureHttpRequest, type SecureHttpResponse } from '../src/proxy/secure-http-client.js';
 import { MemoryShowcaseRepository } from '../src/storage/memory-repository.js';
 import { authenticatedHeaders, publicPolicy, testConfig } from './helpers.js';
@@ -191,11 +192,9 @@ describe('secure proxy behavior', () => {
           passwordSelector: '#password',
           submitSelector: 'button[type=submit]',
           verification: { type: 'expected_selector', selector: '[data-user-menu]' },
-          storageBridge: {
+          sessionToken: {
             storage: 'localStorage',
-            key: 'access_token',
-            headerName: 'authorization',
-            prefix: 'Bearer ',
+            name: 'access_token',
           },
         },
         secret: { username: 'demo@example.com', password: 'private-password' },
@@ -229,20 +228,20 @@ describe('secure proxy behavior', () => {
     const api = await app.inject({
       method: 'GET',
       url: '/showcase/proxy-app/api/session',
-      headers: { authorization: 'Bearer public-placeholder' },
+      headers: { 'x-renisa-session': `Token ${PUBLIC_SESSION_PLACEHOLDER}:v1` },
     });
     expect(api.statusCode).toBe(200);
-    expect(http.attachedHeaders.at(-1)?.authorization).toBe('Bearer real-access-token');
+    expect(http.attachedHeaders.at(-1)?.['x-renisa-session']).toBe('Token real-access-token:v1');
     expect(api.body).not.toContain('real-access-token');
 
     const requestCount = http.urls.length;
     const preflight = await app.inject({
       method: 'OPTIONS',
       url: '/showcase/proxy-app/api/session',
-      headers: { 'access-control-request-headers': 'authorization' },
+      headers: { 'access-control-request-headers': 'x-renisa-session' },
     });
     expect(preflight.statusCode).toBe(204);
-    expect(preflight.headers['access-control-allow-headers']).toContain('authorization');
+    expect(preflight.headers['access-control-allow-headers']).toContain('x-renisa-session');
     expect(http.urls).toHaveLength(requestCount);
     await app.close();
   });

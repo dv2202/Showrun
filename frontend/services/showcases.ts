@@ -71,24 +71,17 @@ function passwordLoginConfiguration(record: BackendShowcase): ShowcaseLoginConfi
     selector,
   ];
   if (!fields.every((value) => typeof value === "string")) return null;
-  const bridgeValue = config.storageBridge;
-  const storageBridge =
-    bridgeValue &&
-    typeof bridgeValue === "object" &&
-    "storage" in bridgeValue &&
-    bridgeValue.storage === "localStorage" &&
-    "key" in bridgeValue &&
-    typeof bridgeValue.key === "string" &&
-    "headerName" in bridgeValue &&
-    (bridgeValue.headerName === "authorization" || bridgeValue.headerName === "x-api-key")
+  const sessionValue = config.sessionToken;
+  const sessionToken =
+    sessionValue &&
+    typeof sessionValue === "object" &&
+    "storage" in sessionValue &&
+    (sessionValue.storage === "cookie" || sessionValue.storage === "localStorage") &&
+    "name" in sessionValue &&
+    typeof sessionValue.name === "string"
       ? {
-          storage: "localStorage" as const,
-          key: bridgeValue.key,
-          headerName: bridgeValue.headerName as "authorization" | "x-api-key",
-          prefix:
-            "prefix" in bridgeValue && typeof bridgeValue.prefix === "string"
-              ? bridgeValue.prefix
-              : "",
+          storage: sessionValue.storage as "cookie" | "localStorage",
+          name: sessionValue.name,
         }
       : undefined;
   return {
@@ -97,7 +90,7 @@ function passwordLoginConfiguration(record: BackendShowcase): ShowcaseLoginConfi
     passwordSelector: config.passwordSelector as string,
     submitSelector: config.submitSelector as string,
     authenticatedSelector: selector as string,
-    ...(storageBridge ? { storageBridge } : {}),
+    ...(sessionToken ? { sessionToken } : {}),
   };
 }
 
@@ -182,7 +175,7 @@ export async function createShowcase(input: CreateShowcaseInput): Promise<Showca
             type: "expected_selector",
             selector: input.login.authenticatedSelector,
           },
-          ...(input.login.storageBridge ? { storageBridge: input.login.storageBridge } : {}),
+          ...(input.login.sessionToken ? { sessionToken: input.login.sessionToken } : {}),
         },
         secret: input.credentials,
       },
@@ -215,7 +208,7 @@ export async function updateShowcase(id: string, input: UpdateShowcaseInput): Pr
           type: "expected_selector",
           selector: input.login.authenticatedSelector,
         },
-        ...(input.login.storageBridge ? { storageBridge: input.login.storageBridge } : {}),
+        ...(input.login.sessionToken ? { sessionToken: input.login.sessionToken } : {}),
       },
       ...(input.credentials ? { secret: input.credentials } : {}),
     };

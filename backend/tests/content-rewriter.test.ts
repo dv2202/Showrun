@@ -52,9 +52,7 @@ describe('target-origin response rewriting', () => {
       '/backend-showcase',
       {
         storage: 'localStorage',
-        key: 'access_token',
-        headerName: 'authorization',
-        prefix: 'Bearer ',
+        name: 'access_token',
       },
     ).toString();
 
