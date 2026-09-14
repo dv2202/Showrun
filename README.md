@@ -9,7 +9,8 @@ Showrun is a developer-focused platform for turning private web applications int
 - `backend/migrations/` — PostgreSQL schema migrations
 
 The frontend uses the backend API for creator accounts, showcase configuration, authentication
-preparation, and proxied target rendering. Proxied target pages are isolated in a sandboxed iframe;
+preparation, and proxied target rendering. Proxied target pages run on per-showcase origins such as
+`demo.localhost:4000` inside a sandboxed iframe;
 the backend enforces route policy and read-only methods.
 
 ## Requirements
@@ -70,6 +71,7 @@ npm run dev
 ```
 
 Open `http://localhost:3000`. The backend listens on `http://127.0.0.1:4000` by default.
+Chrome resolves `*.localhost` to loopback, so local preview origins need no purchased domain or hosts-file edits.
 
 ## Verification
 
@@ -92,7 +94,10 @@ npm run format:check
 - Only developer-configured routes may be exposed.
 - Showcase traffic is limited to read-only `GET` and `HEAD` requests.
 - Target selection and route authorization are enforced by the backend.
+- Every showcase and secondary upstream uses an isolated, server-derived preview hostname.
 - Credentials and captured sessions are encrypted before persistence.
+- Browser storage receives only a session-specific synthetic bridge token; real values remain server-side and are substituted only in dependency-specific headers observed by the private scan.
 - Target requests are protected against SSRF and isolated from visitor-supplied authentication headers.
+- Upstream response headers are reduced to a functional allowlist before they cross the public boundary.
 
 Never commit `.env` files, credentials, tokens, cookies, browser state, build output, or dependency directories. The root `.gitignore` excludes these generated and sensitive files across both applications.

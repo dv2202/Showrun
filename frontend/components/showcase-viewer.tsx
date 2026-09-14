@@ -194,14 +194,14 @@ function ShowcaseChrome({
 }
 
 function TargetApplication({ showcase, route }: { showcase: Showcase; route: ShowcaseRoute }) {
-  const source = `/backend-showcase/${encodeURIComponent(showcase.slug)}${route.path}`;
+  const source = `${showcase.publicUrl.replace(/\/$/, "")}${route.path}`;
 
   return (
     <iframe
       className="h-full min-h-[520px] w-full border-0 bg-white"
       key={source}
       referrerPolicy="no-referrer"
-      sandbox="allow-scripts"
+      sandbox="allow-scripts allow-same-origin"
       src={source}
       title={`${showcase.name} — ${route.title}`}
     />

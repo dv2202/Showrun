@@ -1,13 +1,15 @@
 import type { FastifyRequest } from 'fastify';
 import { promisify } from 'node:util';
 import { brotliDecompress, gunzip, inflate } from 'node:zlib';
-import type { SessionMaterial, SessionTokenLocation, ShowcaseAggregate } from '../domain/types.js';
+import type { SessionMaterial, SessionTokenLocation, ShowcaseAggregate, ShowcaseDependency } from '../domain/types.js';
 import { AppError } from '../errors.js';
 import { AuthenticationService } from '../auth/authentication-service.js';
 import type { ShowcaseRepository } from '../storage/repository.js';
-import { PUBLIC_SESSION_PLACEHOLDER, rewriteContent } from './content-rewriter.js';
+import { rewriteContent } from './content-rewriter.js';
 import { SecureHttpClient, type SecureHttpResponse } from './secure-http-client.js';
 import { assertRequestAllowed, normalizeRequestedSuffix } from '../showcases/route-policy.js';
+import { PreviewOriginRouter } from './preview-origin.js';
+import { SessionBridge } from './session-bridge.js';
 
 const blockedRequestHeaders = new Set([
   'authorization', 'cookie', 'host', 'connection', 'keep-alive', 'proxy-authenticate',
@@ -15,13 +17,8 @@ const blockedRequestHeaders = new Set([
   'x-forwarded-for', 'x-forwarded-host', 'x-forwarded-proto', 'content-length',
   'accept-encoding', 'expect', 'proxy-connection', 'origin', 'referer',
 ]);
-const blockedResponseHeaders = new Set([
-  'set-cookie', 'authorization', 'proxy-authenticate', 'connection', 'keep-alive',
-  'te', 'trailer', 'transfer-encoding', 'upgrade', 'content-length', 'content-encoding',
-  'content-md5', 'digest', 'etag',
-  'content-security-policy', 'content-security-policy-report-only', 'location',
-  'content-location', 'refresh', 'link', 'set-cookie2', 'proxy-connection',
-  'x-frame-options',
+const allowedResponseHeaders = new Set([
+  'content-type', 'content-language', 'last-modified', 'accept-ranges', 'content-range',
 ]);
 
 const gunzipAsync = promisify(gunzip);
@@ -84,7 +81,7 @@ function configuredSessionToken(aggregate: ShowcaseAggregate): SessionTokenLocat
   const value = aggregate.authentication.config.sessionToken;
   if (!value || typeof value !== 'object') return undefined;
   const candidate = value as Record<string, unknown>;
-  if (!['cookie', 'localStorage'].includes(String(candidate.storage)) ||
+  if (!['cookie', 'localStorage', 'sessionStorage'].includes(String(candidate.storage)) ||
     typeof candidate.name !== 'string') return undefined;
   return {
     storage: candidate.storage as SessionTokenLocation['storage'],
@@ -97,7 +94,17 @@ function localStorageTokenValue(
   targetOrigin: string,
   location: SessionTokenLocation,
 ): string | undefined {
-  if (location.storage !== 'localStorage') return undefined;
+  if (location.storage === 'cookie') return undefined;
+  if (location.storage === 'sessionStorage') {
+    const origin = material.sessionOrigins?.find((entry) => {
+      try {
+        return new URL(entry.origin).origin === targetOrigin;
+      } catch {
+        return false;
+      }
+    });
+    return origin?.sessionStorage.find((item) => item.name === location.name)?.value;
+  }
   const origin = material.origins?.find((entry) => {
     try {
       return new URL(entry.origin).origin === targetOrigin;
@@ -108,31 +115,34 @@ function localStorageTokenValue(
   return origin?.localStorage.find((item) => item.name === location.name)?.value;
 }
 
-function containsSessionPlaceholder(value: string | string[] | undefined): boolean {
+function containsSessionPlaceholder(value: string | string[] | undefined, bridgeToken: string): boolean {
   return Array.isArray(value)
-    ? value.some((item) => item.includes(PUBLIC_SESSION_PLACEHOLDER))
-    : value?.includes(PUBLIC_SESSION_PLACEHOLDER) === true;
+    ? value.some((item) => item.includes(bridgeToken))
+    : value?.includes(bridgeToken) === true;
 }
 
 function substitutedSessionHeaders(
   request: FastifyRequest,
   token: string,
+  bridgeToken: string,
+  allowedHeaderNames: string[],
 ): Record<string, string | string[]> {
   const headers: Record<string, string | string[]> = {};
+  const allowedNames = new Set(allowedHeaderNames.map((name) => name.toLowerCase()));
   for (const [key, value] of Object.entries(request.headers)) {
-    if (!containsSessionPlaceholder(value)) continue;
+    if (!containsSessionPlaceholder(value, bridgeToken)) continue;
     const lower = key.toLowerCase();
-    const allowed = lower === 'authorization' ||
-      (!blockedRequestHeaders.has(lower) && !lower.startsWith('x-forwarded-') && lower !== 'x-real-ip');
+    const allowed = allowedNames.has(lower) && (lower === 'authorization' ||
+      (!blockedRequestHeaders.has(lower) && !lower.startsWith('x-forwarded-') && lower !== 'x-real-ip'));
     if (!allowed || value === undefined) continue;
     headers[key] = Array.isArray(value)
-      ? value.map((item) => item.replaceAll(PUBLIC_SESSION_PLACEHOLDER, token))
-      : value.replaceAll(PUBLIC_SESSION_PLACEHOLDER, token);
+      ? value.map((item) => item.replaceAll(bridgeToken, token))
+      : value.replaceAll(bridgeToken, token);
   }
   return headers;
 }
 
-function requestHeaders(request: FastifyRequest): Record<string, string | string[] | undefined> {
+function requestHeaders(request: FastifyRequest, bridgeToken: string): Record<string, string | string[] | undefined> {
   const headers: Record<string, string | string[] | undefined> = {};
   const connectionHeaders = new Set(
     (request.headers.connection ?? '').split(',').map((value) => value.trim().toLowerCase()).filter(Boolean),
@@ -141,7 +151,7 @@ function requestHeaders(request: FastifyRequest): Record<string, string | string
     const lower = key.toLowerCase();
     if (!blockedRequestHeaders.has(lower) && !connectionHeaders.has(lower) &&
       !lower.startsWith('x-forwarded-') && lower !== 'x-real-ip' && value !== undefined &&
-      !containsSessionPlaceholder(value)) headers[key] = value;
+      !containsSessionPlaceholder(value, bridgeToken)) headers[key] = value;
   }
   return headers;
 }
@@ -155,7 +165,7 @@ function responseHeaders(response: SecureHttpResponse): Record<string, string | 
   );
   for (const [key, value] of Object.entries(response.headers)) {
     const lower = key.toLowerCase();
-    if (!blockedResponseHeaders.has(lower) && !connectionHeaders.has(lower)) headers[key] = value;
+    if (allowedResponseHeaders.has(lower) && !connectionHeaders.has(lower)) headers[key] = value;
   }
   return headers;
 }
@@ -173,6 +183,66 @@ export interface ProxyResult {
   body: Buffer;
 }
 
+function inferredSessionToken(material: SessionMaterial): SessionTokenLocation | undefined {
+  const candidates = (material.sessionCandidates ?? []).filter((candidate) =>
+    candidate.confidence === 'high' && candidate.storage !== 'cookie',
+  );
+  if (candidates.length !== 1) return undefined;
+  return { storage: candidates[0]!.storage, name: candidates[0]!.name };
+}
+
+function dependencyOrigin(dependency: ShowcaseDependency | null, targetBase: URL): string {
+  if (!dependency?.targetOrigin) {
+    if (dependency?.originAlias) {
+      throw new AppError('PROXY_ERROR', 'The approved supporting resource is invalid', 502);
+    }
+    return targetBase.origin;
+  }
+  try {
+    return new URL(dependency.targetOrigin).origin;
+  } catch (error) {
+    throw new AppError('PROXY_ERROR', 'The approved supporting resource is invalid', 502, {
+      cause: error,
+    });
+  }
+}
+
+function jsonPointerSegments(pointer: string): string[] {
+  if (!pointer.startsWith('/')) return [];
+  return pointer.slice(1).split('/').map((segment) => segment.replace(/~1/g, '/').replace(/~0/g, '~'));
+}
+
+function redactJson(body: Buffer, dependency: ShowcaseDependency | null): Buffer {
+  if (!dependency?.redactedFields?.length) return body;
+  try {
+    const value: unknown = JSON.parse(body.toString('utf8'));
+    for (const pointer of dependency.redactedFields) {
+      const segments = jsonPointerSegments(pointer);
+      if (!segments.length) {
+        throw new AppError('PROXY_ERROR', 'Approved response no longer matches its redaction policy', 502);
+      }
+      let parent: unknown = value;
+      for (const segment of segments.slice(0, -1)) {
+        if (!parent || typeof parent !== 'object' || !Object.prototype.hasOwnProperty.call(parent, segment)) {
+          throw new AppError('PROXY_ERROR', 'Approved response no longer matches its redaction policy', 502);
+        }
+        parent = (parent as Record<string, unknown>)[segment];
+      }
+      const key = segments.at(-1)!;
+      if (!parent || typeof parent !== 'object' || !Object.prototype.hasOwnProperty.call(parent, key)) {
+        throw new AppError('PROXY_ERROR', 'Approved response no longer matches its redaction policy', 502);
+      }
+      (parent as Record<string, unknown>)[key] = '[REDACTED]';
+    }
+    return Buffer.from(JSON.stringify(value));
+  } catch (error) {
+    if (error instanceof AppError) throw error;
+    throw new AppError('PROXY_ERROR', 'Approved response could not be safely redacted', 502, {
+      cause: error,
+    });
+  }
+}
+
 export class ProxyService {
   private readonly semaphore: Semaphore;
 
@@ -181,12 +251,19 @@ export class ProxyService {
     private readonly authentication: AuthenticationService,
     private readonly http: SecureHttpClient,
     maximumConcurrency: number,
-    private readonly publicProxyPrefix = '/showcase',
+    private readonly previewOrigins: PreviewOriginRouter,
+    private readonly frontendOrigin: string,
+    private readonly sessionBridge: SessionBridge,
   ) {
     this.semaphore = new Semaphore(maximumConcurrency);
   }
 
-  async proxy(aggregate: ShowcaseAggregate, suffix: string, request: FastifyRequest): Promise<ProxyResult> {
+  async proxy(
+    aggregate: ShowcaseAggregate,
+    suffix: string,
+    request: FastifyRequest,
+    originAlias: string | null = null,
+  ): Promise<ProxyResult> {
     const release = await this.semaphore.acquire();
     try {
       const requestedPath = normalizeRequestedSuffix(suffix);
@@ -196,25 +273,27 @@ export class ProxyService {
         incoming.search,
         aggregate.showcase.routes,
         aggregate.showcase.dependencies,
+        originAlias,
       );
       const material = await this.authentication.activeMaterial(aggregate.showcase.id);
       if (!material) throw new AppError('AUTHENTICATION_EXPIRED', 'Showcase authentication is required', 401);
       const targetBase = new URL(aggregate.showcase.targetUrl);
-      const sessionToken = configuredSessionToken(aggregate);
+      const upstreamOrigin = dependencyOrigin(dependency, targetBase);
+      const sessionToken = configuredSessionToken(aggregate) ?? inferredSessionToken(material);
       const localStorageToken = sessionToken
         ? localStorageTokenValue(material, targetBase.origin, sessionToken)
         : undefined;
-      if (sessionToken?.storage === 'localStorage' && !localStorageToken) {
+      if (sessionToken && sessionToken.storage !== 'cookie' && !localStorageToken) {
         throw new AppError(
           'AUTHENTICATION_EXPIRED',
-          `The captured session does not contain localStorage entry "${sessionToken.name}"`,
+          `The captured session does not contain ${sessionToken.storage} entry "${sessionToken.name}"`,
           401,
         );
       }
       if (localStorageToken && /[\r\n]/.test(localStorageToken)) {
         throw new AppError('AUTHENTICATION_FAILED', 'The captured session token is invalid', 422);
       }
-      const target = new URL(targetBase);
+      const target = new URL(upstreamOrigin);
       const basePath = targetBase.pathname.endsWith('/') ? targetBase.pathname : `${targetBase.pathname}/`;
       target.pathname = dependency
         ? normalizeRequestedSuffix(dependency.targetPath)
@@ -223,7 +302,8 @@ export class ProxyService {
           : `${basePath}${requestedPath.slice(1)}`.replace(/\/+/g, '/');
       target.search = incoming.search;
 
-      const baseHeaders = requestHeaders(request);
+      const bridgeToken = this.sessionBridge.token(aggregate);
+      const baseHeaders = requestHeaders(request, bridgeToken);
       const response = await this.http.fetch(target, {
         method: request.method,
         headers: baseHeaders,
@@ -235,9 +315,14 @@ export class ProxyService {
           if (cookie) headers.cookie = cookie;
           if (url.origin === targetBase.origin) {
             Object.assign(headers, material.headers ?? {});
-            if (localStorageToken) {
-              Object.assign(headers, substitutedSessionHeaders(request, localStorageToken));
-            }
+          }
+          if (url.origin === upstreamOrigin && localStorageToken) {
+            Object.assign(headers, substitutedSessionHeaders(
+              request,
+              localStorageToken,
+              bridgeToken,
+              dependency?.sessionHeaders ?? [],
+            ));
           }
           return headers;
         },
@@ -250,25 +335,70 @@ export class ProxyService {
       await this.repository.recordVisit(aggregate.showcase.id, response.status);
       const contentTypeValue = response.headers['content-type'];
       const contentType = Array.isArray(contentTypeValue) ? contentTypeValue[0] ?? '' : contentTypeValue ?? '';
-      const decodedBody = await decodedResponseBody(response);
+      const decodedBody = redactJson(await decodedResponseBody(response), dependency);
+      const originMap = new Map<string, string>([[
+        targetBase.origin,
+        this.previewOrigins.origin(aggregate.showcase.slug),
+      ]]);
+      for (const candidate of aggregate.showcase.dependencies) {
+        if (!candidate.targetOrigin || !candidate.originAlias) continue;
+        try {
+          originMap.set(
+            new URL(candidate.targetOrigin).origin,
+            this.previewOrigins.origin(aggregate.showcase.slug, candidate.originAlias),
+          );
+        } catch {
+          // Ignore corrupt, unused mappings. A request for one still fails closed in dependencyOrigin.
+        }
+      }
       const body = rewriteContent(
         decodedBody,
         contentType,
-        response.finalUrl,
-        targetBase.origin,
-        aggregate.showcase.slug,
-        this.publicProxyPrefix,
-        sessionToken,
+        {
+          documentUrl: response.finalUrl,
+          originMap,
+          sessionToken,
+          bridgeToken,
+        },
       );
+      const mappedOrigins = [...new Set(originMap.values())];
+      const sourceList = mappedOrigins.map((origin) => origin.replace(/[;'\s]/g, '')).join(' ');
+      const requestOrigin = Array.isArray(request.headers.origin)
+        ? request.headers.origin[0]
+        : request.headers.origin;
+      const allowedCorsOrigin = this.previewOrigins.allowedCorsOrigin(
+        requestOrigin,
+        aggregate.showcase.slug,
+        this.frontendOrigin,
+      );
+      const headers = {
+        ...responseHeaders(response),
+        'content-length': String(body.length),
+        'cache-control': 'private, no-store',
+        pragma: 'no-cache',
+        'cross-origin-resource-policy': 'cross-origin',
+        'content-security-policy': `default-src 'self' ${sourceList} data: blob: 'unsafe-inline' 'unsafe-eval'; connect-src 'self' ${sourceList}; frame-ancestors ${this.frontendOrigin}; base-uri 'self'; form-action 'none'; object-src 'none'; worker-src 'none'`,
+        'permissions-policy': 'camera=(), microphone=(), geolocation=(), payment=(), usb=(), serial=(), bluetooth=(), clipboard-write=(), fullscreen=()',
+        'referrer-policy': 'no-referrer',
+        'x-content-type-options': 'nosniff',
+      } as Record<string, string | string[]>;
+      if (allowedCorsOrigin) {
+        headers['access-control-allow-origin'] = allowedCorsOrigin;
+        const vary = headers.vary;
+        const values = (Array.isArray(vary) ? vary : [vary ?? ''])
+          .flatMap((value) => value.split(','))
+          .map((value) => value.trim())
+          .filter(Boolean);
+        if (!values.some((value) => value.toLowerCase() === 'origin')) values.push('Origin');
+        headers.vary = values.join(', ');
+        if (allowedCorsOrigin !== '*') headers['access-control-allow-credentials'] = 'true';
+      }
+      if (sessionToken?.storage === 'cookie') {
+        headers['set-cookie'] = `${sessionToken.name}=${bridgeToken}; Path=/; SameSite=Lax`;
+      }
       return {
         status: response.status,
-        headers: {
-          ...responseHeaders(response),
-          'content-length': String(body.length),
-          'access-control-allow-origin': '*',
-          'cross-origin-resource-policy': 'cross-origin',
-          'content-security-policy': "default-src 'self' data: blob: 'unsafe-inline' 'unsafe-eval'; connect-src 'self'; frame-ancestors 'self'; base-uri 'self'",
-        },
+        headers,
         body,
       };
     } finally {

@@ -11,6 +11,7 @@ import { PreparationCoordinator } from '../sessions/preparation-coordinator.js';
 import { SecureHttpClient } from '../proxy/secure-http-client.js';
 import {
   PlaywrightBootstrapper,
+  type CompatibilityChecker,
   type DependencyScanner,
 } from '../browser/playwright-bootstrapper.js';
 import {
@@ -25,6 +26,9 @@ import { CreatorAuthenticationService } from '../auth/creator-authentication-ser
 import { OAuthClient } from '../auth/oauth-client.js';
 import { ShowcaseService, publicShowcaseStatus } from '../showcases/showcase-service.js';
 import { ProxyService } from '../proxy/proxy-service.js';
+import { PreviewOriginRouter } from '../proxy/preview-origin.js';
+import { SessionBridge } from '../proxy/session-bridge.js';
+import type { SessionMaterial } from '../domain/types.js';
 import { assertRequestAllowed, normalizeRequestedSuffix } from '../showcases/route-policy.js';
 import { pinoRedactPaths } from '../security/redaction.js';
 import {
@@ -36,6 +40,7 @@ import {
   updateShowcaseSchema,
 } from './schemas.js';
 import { creatorSessionToken, registerCreatorAuthRoutes } from './creator-auth-routes.js';
+import { registerPreviewGateway } from './preview-gateway.js';
 
 export interface BuildAppOptions {
   config: AppConfig;
@@ -44,6 +49,16 @@ export interface BuildAppOptions {
   http?: SecureHttpClient;
   providers?: AuthenticationProvider[];
   dependencyScanner?: DependencyScanner;
+  compatibilityChecker?: CompatibilityChecker;
+}
+
+function sensitiveSessionValues(material: SessionMaterial): string[] {
+  return [
+    ...(material.cookies ?? []).map((cookie) => cookie.value),
+    ...(material.origins ?? []).flatMap((origin) => origin.localStorage.map((item) => item.value)),
+    ...(material.sessionOrigins ?? []).flatMap((origin) => origin.sessionStorage.map((item) => item.value)),
+    ...Object.values(material.headers ?? {}),
+  ].filter((value) => value.length >= 8);
 }
 
 export async function buildApp(options: BuildAppOptions): Promise<FastifyInstance> {
@@ -71,6 +86,7 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
     config.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH,
   );
   const dependencyScanner = options.dependencyScanner ?? browser;
+  const compatibilityChecker = options.compatibilityChecker ?? browser;
   const providers = new AuthenticationProviderRegistry(options.providers ?? [
     new TokenAuthProvider(),
     new PasswordAuthProvider(browser),
@@ -83,7 +99,12 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
     new PreparationCoordinator(),
     config.SESSION_TTL_SECONDS,
   );
-  const showcases = new ShowcaseService(repository, policy, encryption);
+  const previewOrigins = new PreviewOriginRouter({
+    protocol: config.SHOWCASE_PREVIEW_PROTOCOL,
+    domain: config.SHOWCASE_PREVIEW_DOMAIN,
+    port: config.SHOWCASE_PREVIEW_PORT,
+  });
+  const showcases = new ShowcaseService(repository, policy, encryption, previewOrigins);
   const creatorAuthentication = new CreatorAuthenticationService(
     repository,
     config.AUTH_SESSION_TTL_SECONDS,
@@ -97,7 +118,9 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
     authentication,
     http,
     config.PROXY_MAX_CONCURRENCY,
-    config.SHOWCASE_PUBLIC_PROXY_PREFIX,
+    previewOrigins,
+    new URL(config.FRONTEND_URL).origin,
+    new SessionBridge(config.ENCRYPTION_KEY),
   );
   app.addHook('onClose', async () => repository.close());
 
@@ -112,6 +135,14 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
     await reply.code(appError.statusCode).send({
       error: { code: appError.code, message: appError.publicMessage },
     });
+  });
+
+  registerPreviewGateway(app, {
+    repository,
+    authentication,
+    proxy,
+    origins: previewOrigins,
+    frontendOrigin: new URL(config.FRONTEND_URL).origin,
   });
 
   await registerCreatorAuthRoutes(app, {
@@ -173,6 +204,44 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
       const { approvals } = dependencyApprovalsSchema.parse(request.body);
       return showcases.updateDependencyApprovals(id, approvals, creatorId(request));
     });
+    admin.get('/api/showcases/:id/session-diagnostics', async (request) => {
+      const { id } = idParamsSchema.parse(request.params);
+      await showcases.get(id, creatorId(request));
+      const aggregate = await repository.getShowcaseById(id);
+      const material = await authentication.activeMaterial(id);
+      if (!material) return { active: false, candidates: [] };
+      const configured = aggregate?.authentication?.config.sessionToken;
+      const configuredLocation = configured && typeof configured === 'object'
+        ? configured as Record<string, unknown>
+        : null;
+      const candidates = (material.sessionCandidates ?? []).map((candidate) => ({
+        ...candidate,
+        selected: configuredLocation
+          ? configuredLocation.storage === candidate.storage && configuredLocation.name === candidate.name
+          : candidate.confidence === 'high' &&
+            (material.sessionCandidates ?? []).filter((item) =>
+              item.confidence === 'high' && item.storage !== 'cookie').length === 1,
+      }));
+      return { active: true, candidates };
+    });
+    admin.post('/api/showcases/:id/compatibility-test', {
+      config: { rateLimit: { max: 3, timeWindow: '1 minute' } },
+    }, async (request) => {
+      const { id } = idParamsSchema.parse(request.params);
+      await showcases.get(id, creatorId(request));
+      const aggregate = await repository.getShowcaseById(id);
+      const material = await authentication.activeMaterial(id);
+      if (!aggregate || !material) {
+        throw new AppError('AUTHENTICATION_EXPIRED', 'Authenticate this showcase before testing it', 409);
+      }
+      const sensitiveValues = sensitiveSessionValues(material);
+      sensitiveValues.push(new URL(aggregate.showcase.targetUrl).origin);
+      return compatibilityChecker.check(
+        previewOrigins.origin(aggregate.showcase.slug),
+        aggregate.showcase.routes,
+        sensitiveValues,
+      );
+    });
     admin.delete('/api/showcases/:id', async (request, reply) => {
       const { id } = idParamsSchema.parse(request.params);
       await showcases.delete(id, creatorId(request));
@@ -204,12 +273,19 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
     if (!aggregate) throw new AppError('NOT_FOUND', 'Showcase not found', 404);
     const active = await authentication.hasActiveSession(aggregate.showcase.id);
     const refreshed = await repository.getShowcaseById(aggregate.showcase.id);
-    return publicShowcaseStatus(refreshed!.showcase, active);
+    return publicShowcaseStatus(
+      refreshed!.showcase,
+      active,
+      previewOrigins.origin(refreshed!.showcase.slug),
+    );
   };
   app.get('/api/showcases/:slug/status', statusHandler);
   app.get('/showcase/:slug/status', statusHandler);
 
   const proxyHandler = async (request: FastifyRequest, reply: FastifyReply) => {
+    if (config.SHOWCASE_LEGACY_PATH_PROXY !== 'true') {
+      return reply.code(404).send({ error: { code: 'NOT_FOUND', message: 'Showcase not found' } });
+    }
     const parsed = proxyParamsSchema.parse(request.params);
     const aggregate = await repository.getShowcaseBySlug(parsed.slug);
     if (!aggregate) throw new AppError('NOT_FOUND', 'Showcase not found', 404);
@@ -221,23 +297,17 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
       aggregate.showcase.routes,
       aggregate.showcase.dependencies,
     );
-    if (!(await authentication.hasActiveSession(aggregate.showcase.id))) {
-      if (aggregate.authentication && aggregate.showcase.state !== 'ERROR') {
-        void authentication.prepare(aggregate.showcase.id).catch((error) => {
-          request.log.warn({ code: asAppError(error).code }, 'Showcase preparation failed');
-        });
-        return reply.code(202).send({ status: 'preparing' });
-      }
-      return reply.code(401).send({ status: aggregate.showcase.state === 'ERROR' ? 'error' : 'auth_required' });
-    }
-    const refreshed = await repository.getShowcaseById(aggregate.showcase.id);
-    const result = await proxy.proxy(refreshed!, parsed['*'], request);
-    for (const [key, value] of Object.entries(result.headers)) reply.header(key, value);
-    return reply.code(result.status).send(result.body);
+    return reply.redirect(
+      `${previewOrigins.origin(aggregate.showcase.slug)}${requestedPath}${incoming.search}`,
+      307,
+    );
   };
   app.route({ method: ['GET', 'HEAD'], url: '/showcase/:slug', handler: proxyHandler });
   app.route({ method: ['GET', 'HEAD'], url: '/showcase/:slug/*', handler: proxyHandler });
   const preflightHandler = async (request: FastifyRequest, reply: FastifyReply) => {
+    if (config.SHOWCASE_LEGACY_PATH_PROXY !== 'true') {
+      return reply.code(404).send({ error: { code: 'NOT_FOUND', message: 'Showcase not found' } });
+    }
     const parsed = proxyParamsSchema.parse(request.params);
     const aggregate = await repository.getShowcaseBySlug(parsed.slug);
     if (!aggregate) throw new AppError('NOT_FOUND', 'Showcase not found', 404);
@@ -270,6 +340,9 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
   app.options('/showcase/:slug', preflightHandler);
   app.options('/showcase/:slug/*', preflightHandler);
   const readOnlyHandler = async (request: FastifyRequest, reply: FastifyReply) => {
+    if (config.SHOWCASE_LEGACY_PATH_PROXY !== 'true') {
+      return reply.code(404).send({ error: { code: 'NOT_FOUND', message: 'Showcase not found' } });
+    }
     const parsed = proxyParamsSchema.parse(request.params);
     const aggregate = await repository.getShowcaseBySlug(parsed.slug);
     if (!aggregate) throw new AppError('NOT_FOUND', 'Showcase not found', 404);

@@ -6,7 +6,10 @@ import { publicPolicy } from './helpers.js';
 
 function fakeBrowser(verificationFails = false) {
   const fill = vi.fn(async () => undefined);
-  const click = vi.fn(async () => undefined);
+  let requestListener: ((request: { headers(): Record<string, string> }) => void) | undefined;
+  const click = vi.fn(async () => {
+    requestListener?.({ headers: () => ({ authorization: 'Bearer real-access-token' }) });
+  });
   const waitFor = vi.fn(async () => {
     if (verificationFails) throw new Error('selector not found');
   });
@@ -15,6 +18,11 @@ function fakeBrowser(verificationFails = false) {
     goto: vi.fn(async () => ({ status: () => 200 })),
     locator,
     waitForURL: vi.fn(async () => undefined),
+    on: vi.fn((event: string, listener: typeof requestListener) => {
+      if (event === 'request') requestListener = listener;
+    }),
+    evaluate: vi.fn(async () => [{ name: 'temporary_session', value: 'session-storage-value' }]),
+    url: vi.fn(() => 'https://login.test/dashboard'),
   } as unknown as Page;
   const contextClose = vi.fn(async () => undefined);
   const context = {
@@ -25,7 +33,10 @@ function fakeBrowser(verificationFails = false) {
         name: 'sid', value: 'server-session', domain: 'login.test', path: '/', expires: -1,
         httpOnly: true, secure: true, sameSite: 'Lax' as const,
       }],
-      origins: [],
+      origins: [{
+        origin: 'https://login.test',
+        localStorage: [{ name: 'access_token', value: 'real-access-token' }],
+      }],
     })),
     close: contextClose,
   } as unknown as BrowserContext;
@@ -61,6 +72,16 @@ describe('Playwright password authentication', () => {
     expect(fake.click).toHaveBeenCalledOnce();
     expect(fake.waitFor).toHaveBeenCalledWith({ state: 'visible', timeout: 30_000 });
     expect(state.cookies?.[0]?.name).toBe('sid');
+    expect(state.sessionOrigins).toEqual([{
+      origin: 'https://login.test',
+      sessionStorage: [{ name: 'temporary_session', value: 'session-storage-value' }],
+    }]);
+    expect(state.sessionCandidates).toContainEqual({
+      storage: 'localStorage',
+      name: 'access_token',
+      confidence: 'high',
+      requestHeaders: ['authorization'],
+    });
     expect(fake.contextClose).toHaveBeenCalledOnce();
     expect(fake.browserClose).toHaveBeenCalledOnce();
   });

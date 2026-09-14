@@ -3,6 +3,8 @@ import { chromium, type Browser, type BrowserContext, type Route } from 'playwri
 import { AppError } from '../errors.js';
 import type {
   SessionMaterial,
+  SessionCandidate,
+  CompatibilityReport,
   ShowcaseDependency,
   ShowcaseDependencyCategory,
   ShowcaseRoute,
@@ -10,6 +12,9 @@ import type {
 } from '../domain/types.js';
 import { SecureHttpClient } from '../proxy/secure-http-client.js';
 import { TargetPolicy } from '../security/target-policy.js';
+import { inspectJsonResponseFields } from '../proxy/dependency-inspection.js';
+import { originAliasFor } from '../proxy/preview-origin.js';
+import { observedSessionHeaders } from '../proxy/session-bridge.js';
 
 export interface PasswordBootstrapConfig {
   loginUrl: string;
@@ -31,6 +36,34 @@ export interface DependencyScanner {
     routes: ShowcaseRoute[],
     material: SessionMaterial,
   ): Promise<ShowcaseDependency[]>;
+}
+
+export interface CompatibilityChecker {
+  check(publicUrl: string, routes: ShowcaseRoute[], sensitiveValues: string[]): Promise<CompatibilityReport>;
+}
+
+function sessionCandidates(
+  material: SessionMaterial,
+  observedHeaders: Array<Record<string, string>>,
+): SessionCandidate[] {
+  const candidates: Array<{ storage: SessionCandidate['storage']; name: string; value: string }> = [
+    ...(material.cookies ?? []).map(({ name, value }) => ({ storage: 'cookie' as const, name, value })),
+    ...(material.origins ?? []).flatMap((origin) =>
+      origin.localStorage.map(({ name, value }) => ({ storage: 'localStorage' as const, name, value }))),
+    ...(material.sessionOrigins ?? []).flatMap((origin) =>
+      origin.sessionStorage.map(({ name, value }) => ({ storage: 'sessionStorage' as const, name, value }))),
+  ];
+  return candidates.slice(0, 100).map((candidate) => {
+    const requestHeaders = [...new Set(observedHeaders.flatMap((headers) =>
+      Object.entries(headers)
+        .filter(([, value]) => candidate.value.length >= 8 && value.includes(candidate.value))
+        .map(([name]) => name.toLowerCase()),
+    ))];
+    const confidence = requestHeaders.length
+      ? 'high'
+      : /auth|token|session|jwt/i.test(candidate.name) ? 'medium' : 'low';
+    return { storage: candidate.storage, name: candidate.name, confidence, requestHeaders };
+  });
 }
 
 function dependencyCategory(contentType: string, resourceType: string): ShowcaseDependencyCategory {
@@ -142,6 +175,12 @@ export class PlaywrightBootstrapper {
         await context.routeWebSocket('**/*', (socket) => socket.close());
       }
       const page = await context.newPage();
+      const observedHeaders: Array<Record<string, string>> = [];
+      if (typeof page.on === 'function') {
+        page.on('request', (request) => {
+          if (observedHeaders.length < 500) observedHeaders.push(request.headers());
+        });
+      }
       const timeout = config.timeoutMs ?? 30_000;
       stageMessage = 'Login page could not be loaded';
       await page.goto(config.loginUrl, { waitUntil: 'domcontentloaded', timeout });
@@ -154,7 +193,17 @@ export class PlaywrightBootstrapper {
       stageMessage = 'Login completed, but authentication could not be verified';
       await this.verify(page, config.verification, timeout);
       stageMessage = 'Authenticated session could not be captured';
-      return (await context.storageState()) as SessionMaterial;
+      const material = (await context.storageState()) as SessionMaterial;
+      const sessionStorage = typeof page.evaluate === 'function'
+        ? await page.evaluate(() =>
+          Object.entries(window.sessionStorage).map(([name, value]) => ({ name, value })),
+        ).catch(() => [] as Array<{ name: string; value: string }>)
+        : [];
+      if (sessionStorage.length) {
+        material.sessionOrigins = [{ origin: new URL(page.url()).origin, sessionStorage }];
+      }
+      material.sessionCandidates = sessionCandidates(material, observedHeaders);
+      return material;
     } catch (error) {
       if (error instanceof AppError) throw error;
       throw new AppError('AUTHENTICATION_FAILED', stageMessage, 422, {
@@ -190,6 +239,13 @@ export class PlaywrightBootstrapper {
         },
         ...(material.headers ? { extraHTTPHeaders: material.headers } : {}),
       });
+      if (material.sessionOrigins?.length) {
+        await context.addInitScript((origins) => {
+          const current = origins.find((entry) => entry.origin === window.location.origin);
+          if (!current) return;
+          for (const item of current.sessionStorage) window.sessionStorage.setItem(item.name, item.value);
+        }, material.sessionOrigins);
+      }
       await context.route('**/*', async (route) => {
         const request = route.request();
         const method = request.method().toUpperCase();
@@ -200,11 +256,7 @@ export class PlaywrightBootstrapper {
           await route.abort('blockedbyclient');
           return;
         }
-        if (
-          requestUrl.origin !== targetBase.origin ||
-          !['GET', 'HEAD'].includes(method) ||
-          requestCount >= 250
-        ) {
+        if (!['GET', 'HEAD'].includes(method) || requestCount >= 250) {
           await route.abort('blockedbyclient');
           return;
         }
@@ -218,14 +270,22 @@ export class PlaywrightBootstrapper {
             ? contentTypeValue[0] ?? ''
             : contentTypeValue ?? '';
           const category = dependencyCategory(contentType, request.resourceType());
-          const key = `${requestUrl.pathname}${requestUrl.search}`;
+          const originAlias = originAliasFor(requestUrl.origin, targetBase.origin);
+          const key = `${requestUrl.origin}${requestUrl.pathname}${requestUrl.search}`;
+          const fields = inspectJsonResponseFields(response.body, contentType);
+          const sessionHeaders = observedSessionHeaders(material, request.headers());
           discovered.set(key, {
             path: requestUrl.pathname,
             targetPath: requestUrl.pathname,
+            targetOrigin: requestUrl.origin,
+            originAlias,
             search: requestUrl.search,
             contentType,
             category,
             approved: ['script', 'style', 'font', 'image'].includes(category),
+            ...(sessionHeaders.length ? { sessionHeaders } : {}),
+            ...(fields?.length ? { responseFields: fields } : {}),
+            redactedFields: [],
             contentHash: createHash('sha256').update(response.body).digest('hex'),
             discoveredAt: new Date().toISOString(),
           });
@@ -252,6 +312,93 @@ export class PlaywrightBootstrapper {
       throw new AppError('PROXY_ERROR', 'Showcase dependencies could not be scanned', 502, {
         cause: error,
       });
+    } finally {
+      await context?.close().catch(() => undefined);
+      await browser?.close().catch(() => undefined);
+    }
+  }
+
+  async check(
+    publicUrl: string,
+    routes: ShowcaseRoute[],
+    sensitiveValues: string[],
+  ): Promise<CompatibilityReport> {
+    const expectedOrigin = new URL(publicUrl).origin;
+    let browser: Browser | undefined;
+    let context: BrowserContext | undefined;
+    try {
+      browser = await this.launcher.launch({
+        headless: this.headless,
+        ...(this.executablePath ? { executablePath: this.executablePath } : {}),
+      });
+      context = await browser.newContext({ serviceWorkers: 'block' });
+      const results: CompatibilityReport['routes'] = [];
+      for (const showcaseRoute of routes) {
+        const page = await context.newPage();
+        const failedRequests: string[] = [];
+        const consoleErrors: string[] = [];
+        page.on('requestfailed', (request) => {
+          if (failedRequests.length < 20) failedRequests.push(request.url());
+        });
+        page.on('console', (message) => {
+          if (message.type() === 'error' && consoleErrors.length < 20) consoleErrors.push(message.text());
+        });
+        let status: number | null = null;
+        let loaded = false;
+        let loginDetected = false;
+        let secretsExposed = false;
+        let mutationsBlocked = false;
+        try {
+          const url = new URL(showcaseRoute.path, `${publicUrl.replace(/\/$/, '')}/`);
+          const response = await page.goto(url.href, { waitUntil: 'domcontentloaded', timeout: 15_000 });
+          status = response?.status() ?? null;
+          const contentType = response?.headers()['content-type'] ?? '';
+          loaded = status !== null && status >= 200 && status < 400 && /html|xhtml/i.test(contentType);
+          await page.waitForTimeout(500);
+          const visible = await page.evaluate(() => ({
+            html: document.documentElement.outerHTML,
+            text: document.body?.innerText ?? '',
+            hasPassword: Boolean(document.querySelector('input[type="password"]')),
+            local: Object.values(window.localStorage),
+            session: Object.values(window.sessionStorage),
+            cookies: document.cookie,
+          }));
+          loginDetected = visible.hasPassword && /\b(?:sign[ -]?in|log[ -]?in)\b/i.test(visible.text);
+          const publicSurface = [visible.html, ...visible.local, ...visible.session, visible.cookies];
+          secretsExposed = sensitiveValues
+            .filter((value) => value.length >= 8)
+            .some((value) => publicSurface.some((surface) => surface.includes(value)));
+          mutationsBlocked = (await context.request.post(page.url(), {
+            data: '{}',
+            failOnStatusCode: false,
+          })).status() === 405;
+        } catch (error) {
+          consoleErrors.push(error instanceof Error ? error.message : 'Preview route failed to load');
+        } finally {
+          results.push({
+            path: showcaseRoute.path,
+            status,
+            loaded,
+            loginDetected,
+            originIsolated: (() => {
+              try { return new URL(page.url()).origin === expectedOrigin; } catch { return false; }
+            })(),
+            mutationsBlocked,
+            secretsExposed,
+            failedRequests,
+            consoleErrors,
+          });
+          await page.close();
+        }
+      }
+      return {
+        compatible: results.every((result) =>
+          result.loaded && !result.loginDetected && result.originIsolated &&
+          result.mutationsBlocked && !result.secretsExposed,
+        ),
+        checkedAt: new Date().toISOString(),
+        routes: results,
+      };
     } finally {
       await context?.close().catch(() => undefined);
       await browser?.close().catch(() => undefined);

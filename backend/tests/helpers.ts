@@ -20,7 +20,10 @@ export function testConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     PROXY_TIMEOUT_MS: 1000,
     PROXY_MAX_RESPONSE_BYTES: 1_000_000,
     PROXY_MAX_CONCURRENCY: 10,
-    SHOWCASE_PUBLIC_PROXY_PREFIX: '/backend-showcase',
+    SHOWCASE_PREVIEW_PROTOCOL: 'http',
+    SHOWCASE_PREVIEW_DOMAIN: 'localhost',
+    SHOWCASE_PREVIEW_PORT: 3000,
+    SHOWCASE_LEGACY_PATH_PROXY: 'true',
     LOG_LEVEL: 'silent',
     ...overrides,
   };

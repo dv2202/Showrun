@@ -60,11 +60,28 @@ Creator-only:
 - `POST /api/showcases/:id/prepare`
 - `POST /api/showcases/:id/authenticate`
 - `POST /api/showcases/:id/re-authenticate`
+- `GET /api/showcases/:id/session-diagnostics`
+- `POST /api/showcases/:id/scan-dependencies`
+- `PATCH /api/showcases/:id/dependencies`
+- `POST /api/showcases/:id/compatibility-test`
 
 Public:
 
 - `GET /api/showcases/:slug/status` (also `/showcase/:slug/status`)
-- `GET|HEAD /showcase/:slug` and `/showcase/:slug/*`
+- `GET|HEAD http://:slug.localhost:4000/*` in local development
+- `GET|HEAD /showcase/:slug` and `/showcase/:slug/*` redirect to the isolated origin while the legacy path fallback is enabled
+
+The browser viewer uses an isolated origin rather than a path prefix. With the default local configuration,
+the dashboard is `http://localhost:3000`, the API is `http://127.0.0.1:4000`, and a preview is
+`http://<slug>.localhost:4000`. Root-relative application requests such as `/api/session` therefore return
+to the showcase proxy instead of accidentally reaching Next.js. No domain purchase or `/etc/hosts` entry is
+needed for Chromium development. Production must use a separate registrable preview domain so dashboard
+cookies cannot be shared with untrusted target code.
+
+At deployment time, configure wildcard DNS and TLS for `*.<SHOWCASE_PREVIEW_DOMAIN>`, route that
+wildcard host directly to the backend, and preserve the original `Host` header. Set the preview port
+to `443` with `SHOWCASE_PREVIEW_PROTOCOL=https`. Keep creator/admin routes on a different host; a
+preview hostname is always interpreted as target application traffic and cannot reach admin APIs.
 
 Configure OAuth apps with callback URLs using `AUTH_PUBLIC_API_URL` (the local frontend gateway uses
 `http://localhost:3000/backend-api`):
@@ -114,17 +131,21 @@ For the common password flow, `username` and `password` may instead be supplied 
 
 Verification also supports `expected_url`, `authenticated_endpoint`, and `absence_of_login_selector`. Secrets and captured session material are encrypted before persistence. Public responses never contain target URLs, provider details, credentials, tokens, cookies, or Playwright state.
 
-`sessionToken` identifies either a cookie name or a direct token key in `localStorage`. The creator
+`sessionToken` identifies either a cookie name or a direct token key in `localStorage` or `sessionStorage`. The creator
 supplies only the storage type and name. Showrun captures the real value after login and keeps it
-encrypted server-side. For localStorage, the sandbox receives a non-secret placeholder; the target
+encrypted server-side. For browser storage, the sandbox receives a session-specific signed synthetic value; the target
 application chooses its own request header and format, and Showrun substitutes only that placeholder
-on approved upstream reads.
+in the dependency-specific header names observed during the private scan, on approved upstream reads.
+If the application changes how it sends the token, the creator must rescan before the bridge is updated.
 
 After creating a showcase, `POST /api/showcases/:id/scan-dependencies` performs a creator-only,
-authenticated browser scan of the explicitly configured pages. Same-origin static scripts, styles,
+authenticated browser scan of the explicitly configured pages. Static scripts, styles,
 fonts, and images are saved in a hidden dependency manifest and approved automatically. Read-only
-API requests are saved as unapproved candidates and can be approved with
+API requests are saved as unapproved candidates and can be blocked, approved with selected JSON fields
+redacted, or approved in full with
 `PATCH /api/showcases/:id/dependencies`. Visitor requests never add to or modify the manifest.
+Cross-origin resources receive stable opaque preview aliases such as
+`http://o-12ab34cd56ef--<slug>.localhost:4000`; the alias never reveals or selects an arbitrary upstream.
 
 ## Security properties
 
@@ -133,9 +154,10 @@ API requests are saved as unapproved candidates and can be approved with
 - Showcase traffic is read-only: only `GET` and `HEAD` reach the target. `POST`, `PUT`, `PATCH`, and `DELETE` return `405`; approved `OPTIONS` requests receive a local CORS preflight response and never reach the target.
 - Every HTTP/HTTPS hop is resolved and checked immediately before a connection pinned to the validated address. All DNS answers must be public. Redirects are independently revalidated.
 - Loopback, private, link-local, multicast, reserved, metadata, IPv4-mapped IPv6, and unsupported protocols are rejected.
-- Incoming visitor cookies/authorization are removed. Session cookies and configured auth headers are attached only server-side. `Set-Cookie`, auth, hop-by-hop, and conflicting framing headers are removed from proxy responses.
-- Target HTML is rendered inside a sandboxed frontend iframe. Same-origin URLs are rewritten through
-  `SHOWCASE_PUBLIC_PROXY_PREFIX`, and an early capture-phase guard blocks pointer, keyboard, form,
+- Incoming visitor cookies/authorization are removed. Session cookies and configured auth headers are attached only server-side. Browser-storage placeholders are substituted only in dependency-specific headers observed by the private scan. Proxy responses use a small functional header allowlist; authentication, cookies, infrastructure metadata, upstream CORS, caching, and framing policy never pass through.
+- A response with an active redaction policy fails closed if it is no longer valid JSON or no longer matches every approved JSON pointer.
+- Target HTML is rendered inside a sandboxed frontend iframe on a per-showcase origin. Relative URLs stay
+  on that origin, known absolute origins map to isolated aliases, and an early capture-phase guard blocks pointer, keyboard, form,
   drag, and context-menu actions while preserving scrolling and hover rendering.
 - Browser service workers and WebSockets are blocked; browser HTTP requests use the same validated, pinned transport as the proxy.
 - Authentication failures do not automatically loop. An `ERROR` showcase requires creator action. Concurrent preparation shares a single promise per showcase.
@@ -143,15 +165,17 @@ API requests are saved as unapproved candidates and can be approved with
 ## MVP limitations
 
 - WebSocket applications are explicitly unsupported.
+- The target must honor HTTP method semantics. A target `GET` or `HEAD` endpoint that causes a mutation cannot be made read-only by the proxy and must not be included in a showcase route or dependency scope.
 - Rewriting covers HTML `href`, `src`, `action`, `poster`, `srcset`, inline/style-block CSS URLs, and CSS responses. JavaScript string rewriting, streaming responses, downloads larger than the configured response cap, signed absolute URLs, and complex CSP-dependent applications are not supported.
-- Direct token values in `localStorage` are supported through the explicit session bridge. Serialized
-  objects, nested token fields, rotating browser-side refresh flows, IndexedDB, and sessionStorage are
-  not yet supported.
-- Developers explicitly configure every navigable page. Supporting same-origin dependencies are
+- Direct token values in `localStorage` and `sessionStorage` are supported through the explicit session bridge.
+  Serialized objects, nested token fields, rotating browser-side refresh flows, and IndexedDB are not yet supported.
+- Developers explicitly configure every navigable page. Supporting dependencies across validated origins are
   discovered only during a creator-triggered scan; static resources are approved automatically,
   while API/data requests require explicit approval. Public traffic can never expand access.
-- JavaScript-generated absolute URLs are not rewritten. Applications that construct root-relative
-  asset or API URLs at runtime may need target-specific changes before they render correctly.
+- Root-relative browser requests work naturally on the preview origin. Absolute URLs in HTML and CSS map
+  to preview aliases on the server. URLs hidden in arbitrary JavaScript source strings, signed URLs,
+  WebSockets, WebAuthn, origin-bound signatures, and service-worker-dependent apps remain unsupported;
+  Showrun does not serialize private upstream-origin maps into the visitor's browser.
 - The preparation coordinator deduplicates within one backend process. Run one backend replica for this MVP; add a PostgreSQL advisory-lock implementation before horizontal API scaling.
 - Background session polling is intentionally absent. Expiry is detected lazily by TTL, 401, optional configured 403, login redirects, or a configured unauthenticated response marker.
 

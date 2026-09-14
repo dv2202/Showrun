@@ -59,10 +59,12 @@ export function approvedDependency(
   requestedPath: string,
   search: string,
   dependencies: ShowcaseDependency[],
+  originAlias: string | null = null,
 ): ShowcaseDependency | null {
   const normalized = normalizeRoutePath(requestedPath);
   return dependencies.find((dependency) =>
     dependency.approved &&
+    (dependency.originAlias ?? null) === originAlias &&
     normalizeRoutePath(dependency.path) === normalized &&
     dependency.search === search
   ) ?? null;
@@ -73,10 +75,11 @@ export function assertRequestAllowed(
   search: string,
   routes: ShowcaseRoute[],
   dependencies: ShowcaseDependency[],
+  originAlias: string | null = null,
 ): ShowcaseDependency | null {
-  if (routeIsAllowed(requestedPath, routes)) return null;
-  const dependency = approvedDependency(requestedPath, search, dependencies);
+  const dependency = approvedDependency(requestedPath, search, dependencies, originAlias);
   if (dependency) return dependency;
+  if (originAlias === null && routeIsAllowed(requestedPath, routes)) return null;
   // Deliberately use NOT_FOUND so visitors cannot distinguish unavailable target paths.
   throw new AppError('NOT_FOUND', 'Showcase route not found', 404);
 }

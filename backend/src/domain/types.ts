@@ -12,8 +12,13 @@ export type ShowcaseMode = 'selected_routes' | 'full_application';
 export type CreatorProvider = 'github' | 'google';
 
 export interface SessionTokenLocation {
-  storage: 'cookie' | 'localStorage';
+  storage: 'cookie' | 'localStorage' | 'sessionStorage';
   name: string;
+}
+
+export interface SessionCandidate extends SessionTokenLocation {
+  confidence: 'high' | 'medium' | 'low';
+  requestHeaders: string[];
 }
 
 export interface ShowcaseRoute {
@@ -33,10 +38,19 @@ export type ShowcaseDependencyCategory =
 export interface ShowcaseDependency {
   path: string;
   targetPath: string;
+  targetOrigin?: string;
+  originAlias?: string | null;
   search: string;
   contentType: string;
   category: ShowcaseDependencyCategory;
   approved: boolean;
+  sessionHeaders?: string[];
+  responseFields?: Array<{
+    path: string;
+    type: 'string' | 'number' | 'boolean' | 'null' | 'object' | 'array';
+    sensitivity: 'none' | 'possible' | 'sensitive';
+  }>;
+  redactedFields?: string[];
   contentHash: string;
   discoveredAt: string;
 }
@@ -119,7 +133,30 @@ export interface SessionMaterial {
     origin: string;
     localStorage: Array<{ name: string; value: string }>;
   }>;
+  sessionOrigins?: Array<{
+    origin: string;
+    sessionStorage: Array<{ name: string; value: string }>;
+  }>;
+  sessionCandidates?: SessionCandidate[];
   headers?: Record<string, string>;
+}
+
+export interface CompatibilityRouteResult {
+  path: string;
+  status: number | null;
+  loaded: boolean;
+  loginDetected: boolean;
+  originIsolated: boolean;
+  mutationsBlocked: boolean;
+  secretsExposed: boolean;
+  failedRequests: string[];
+  consoleErrors: string[];
+}
+
+export interface CompatibilityReport {
+  compatible: boolean;
+  checkedAt: string;
+  routes: CompatibilityRouteResult[];
 }
 
 export interface ShowcaseAggregate {

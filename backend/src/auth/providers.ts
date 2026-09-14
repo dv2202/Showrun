@@ -16,7 +16,7 @@ const verificationSchema = z.discriminatedUnion('type', [
 ]);
 
 const sessionTokenLocationSchema = z.object({
-  storage: z.enum(['cookie', 'localStorage']),
+  storage: z.enum(['cookie', 'localStorage', 'sessionStorage']),
   name: z.string().min(1).max(200).regex(/^[^\x00-\x1f\x7f;,]+$/),
 });
 
@@ -43,8 +43,10 @@ export class PasswordAuthProvider implements AuthenticationProvider {
       const { storage, name } = parsedConfig.sessionToken;
       const captured = storage === 'cookie'
         ? material.cookies?.some((cookie) => cookie.name === name && cookie.value.length > 0)
-        : material.origins?.some((origin) =>
+        : storage === 'localStorage' ? material.origins?.some((origin) =>
           origin.localStorage.some((item) => item.name === name && item.value.length > 0),
+        ) : material.sessionOrigins?.some((origin) =>
+          origin.sessionStorage.some((item) => item.name === name && item.value.length > 0),
         );
       if (!captured) {
         throw new AppError(

@@ -11,6 +11,7 @@ import { EncryptionService } from '../security/encryption.js';
 import { TargetPolicy } from '../security/target-policy.js';
 import type { ShowcaseRepository } from '../storage/repository.js';
 import { normalizeRoutePath } from './route-policy.js';
+import { PreviewOriginRouter } from '../proxy/preview-origin.js';
 
 export interface AuthenticationInput {
   provider: AuthenticationProviderKind;
@@ -66,11 +67,13 @@ function editableAuthenticationConfig(authentication: AuthenticationConfig | nul
 export function creatorShowcase(
   showcase: Showcase,
   authentication: AuthenticationConfig | null,
+  publicUrl: string,
 ) {
   return {
     id: showcase.id,
     name: showcase.name,
     slug: showcase.slug,
+    publicUrl,
     targetUrl: showcase.targetUrl,
     mode: showcase.mode,
     routes: showcase.routes,
@@ -87,7 +90,7 @@ export function creatorShowcase(
 
 export type PublicStatus = 'preparing' | 'ready' | 'auth_required' | 'error';
 
-export function publicShowcaseStatus(showcase: Showcase, hasValidSession: boolean) {
+export function publicShowcaseStatus(showcase: Showcase, hasValidSession: boolean, publicUrl: string) {
   let status: PublicStatus;
   if (showcase.state === 'PREPARING') status = 'preparing';
   else if (showcase.state === 'ACTIVE' && hasValidSession) status = 'ready';
@@ -96,6 +99,7 @@ export function publicShowcaseStatus(showcase: Showcase, hasValidSession: boolea
   return {
     name: showcase.name,
     slug: showcase.slug,
+    publicUrl,
     status,
     mode: showcase.mode,
     routes: showcase.routes,
@@ -107,6 +111,7 @@ export class ShowcaseService {
     private readonly repository: ShowcaseRepository,
     private readonly policy: TargetPolicy,
     private readonly encryption: EncryptionService,
+    private readonly previewOrigins: PreviewOriginRouter,
   ) {}
 
   async create(input: CreateShowcaseInput, userId: string) {
@@ -141,7 +146,11 @@ export class ShowcaseService {
     const showcases = await this.repository.listShowcases(userId);
     return Promise.all(showcases.map(async (showcase) => {
       const aggregate = await this.repository.getShowcaseById(showcase.id);
-      return creatorShowcase(showcase, aggregate?.authentication ?? null);
+      return creatorShowcase(
+        showcase,
+        aggregate?.authentication ?? null,
+        this.previewOrigins.origin(showcase.slug),
+      );
     }));
   }
 
@@ -150,7 +159,11 @@ export class ShowcaseService {
     if (!aggregate || aggregate.showcase.userId !== userId) {
       throw new AppError('NOT_FOUND', 'Showcase not found', 404);
     }
-    return creatorShowcase(aggregate.showcase, aggregate.authentication ?? null);
+    return creatorShowcase(
+      aggregate.showcase,
+      aggregate.authentication ?? null,
+      this.previewOrigins.origin(aggregate.showcase.slug),
+    );
   }
 
   async update(id: string, input: UpdateShowcaseInput, userId: string) {
@@ -199,23 +212,36 @@ export class ShowcaseService {
     if (!aggregate || aggregate.showcase.userId !== userId) {
       throw new AppError('NOT_FOUND', 'Showcase not found', 404);
     }
-    const previousApprovals = new Set(
+    const previousApprovals = new Map(
       aggregate.showcase.dependencies
         .filter((dependency) => dependency.approved)
-        .map((dependency) => `${dependency.path}\u0000${dependency.search}`),
+        .map((dependency) => [
+          `${dependency.originAlias ?? ''}\u0000${dependency.path}\u0000${dependency.search}`,
+          dependency.redactedFields ?? [],
+        ]),
     );
-    const merged = dependencies.map((dependency) => ({
-      ...dependency,
-      approved:
-        dependency.approved || previousApprovals.has(`${dependency.path}\u0000${dependency.search}`),
-    }));
+    const merged = dependencies.map((dependency) => {
+      const key = `${dependency.originAlias ?? ''}\u0000${dependency.path}\u0000${dependency.search}`;
+      const previousRedactions = previousApprovals.get(key);
+      return {
+        ...dependency,
+        approved: dependency.approved || previousRedactions !== undefined,
+        redactedFields: previousRedactions ?? dependency.redactedFields ?? [],
+      };
+    });
     await this.repository.updateShowcase(id, { dependencies: merged });
     return this.get(id, userId);
   }
 
   async updateDependencyApprovals(
     id: string,
-    approvals: Array<{ path: string; search: string; approved: boolean }>,
+    approvals: Array<{
+      path: string;
+      search: string;
+      originAlias?: string | null;
+      approved: boolean;
+      redactedFields?: string[];
+    }>,
     userId: string,
   ) {
     const aggregate = await this.repository.getShowcaseById(id);
@@ -223,11 +249,14 @@ export class ShowcaseService {
       throw new AppError('NOT_FOUND', 'Showcase not found', 404);
     }
     const decisions = new Map(
-      approvals.map((approval) => [`${approval.path}\u0000${approval.search}`, approval.approved]),
+      approvals.map((approval) => [
+        `${approval.originAlias ?? ''}\u0000${approval.path}\u0000${approval.search}`,
+        { approved: approval.approved, redactedFields: approval.redactedFields ?? [] },
+      ]),
     );
     const dependencies = aggregate.showcase.dependencies.map((dependency) => {
-      const approved = decisions.get(`${dependency.path}\u0000${dependency.search}`);
-      return approved === undefined ? dependency : { ...dependency, approved };
+      const decision = decisions.get(`${dependency.originAlias ?? ''}\u0000${dependency.path}\u0000${dependency.search}`);
+      return decision === undefined ? dependency : { ...dependency, ...decision };
     });
     await this.repository.updateShowcase(id, { dependencies });
     return this.get(id, userId);

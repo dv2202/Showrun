@@ -20,7 +20,10 @@ const schema = z.object({
   PROXY_TIMEOUT_MS: z.coerce.number().int().min(1000).max(60_000).default(15_000),
   PROXY_MAX_RESPONSE_BYTES: z.coerce.number().int().min(1024).max(52_428_800).default(10_485_760),
   PROXY_MAX_CONCURRENCY: z.coerce.number().int().min(1).max(1000).default(100),
-  SHOWCASE_PUBLIC_PROXY_PREFIX: z.string().regex(/^\/[a-z0-9/_-]*$/i).default('/backend-showcase'),
+  SHOWCASE_PREVIEW_PROTOCOL: z.enum(['http', 'https']).default('http'),
+  SHOWCASE_PREVIEW_DOMAIN: z.string().trim().toLowerCase().regex(/^(?:localhost|[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?)$/).default('localhost'),
+  SHOWCASE_PREVIEW_PORT: z.coerce.number().int().min(1).max(65535).default(4000),
+  SHOWCASE_LEGACY_PATH_PROXY: z.enum(['true', 'false']).default('true'),
   LOG_LEVEL: z.string().default('info'),
 });
 

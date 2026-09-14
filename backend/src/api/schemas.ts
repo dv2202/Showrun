@@ -26,7 +26,7 @@ const loginVerificationSchema = z.discriminatedUnion('type', [
 ]);
 
 const sessionTokenLocationSchema = z.object({
-  storage: z.enum(['cookie', 'localStorage']),
+  storage: z.enum(['cookie', 'localStorage', 'sessionStorage']),
   name: z.string().min(1).max(200).regex(/^[^\x00-\x1f\x7f;,]+$/),
 });
 
@@ -89,7 +89,9 @@ export const dependencyApprovalsSchema = z.object({
   approvals: z.array(z.object({
     path: z.string().startsWith('/').max(2000),
     search: z.string().max(2000),
+    originAlias: z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/).nullable().optional(),
     approved: z.boolean(),
+    redactedFields: z.array(z.string().startsWith('/').max(1000)).max(100).optional(),
   })).max(250),
 });
 export const slugParamsSchema = z.object({ slug: z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/).max(80) });

@@ -36,7 +36,9 @@ export default function EditProject() {
   const [passwordSelector, setPasswordSelector] = useState("");
   const [submitSelector, setSubmitSelector] = useState("");
   const [authenticatedSelector, setAuthenticatedSelector] = useState("");
-  const [sessionStorageType, setSessionStorageType] = useState<"cookie" | "localStorage">("cookie");
+  const [sessionStorageType, setSessionStorageType] = useState<
+    "cookie" | "localStorage" | "sessionStorage"
+  >("cookie");
   const [sessionName, setSessionName] = useState("");
   const [mode, setMode] = useState<ShowcaseMode>("selected_routes");
   const [routes, setRoutes] = useState<ShowcaseRoute[]>([]);
@@ -420,20 +422,22 @@ export default function EditProject() {
                                 className={inputClass}
                                 onChange={(event) =>
                                   setSessionStorageType(
-                                    event.target.value as "cookie" | "localStorage",
+                                    event.target.value as
+                                      "cookie" | "localStorage" | "sessionStorage",
                                   )
                                 }
                                 value={sessionStorageType}
                               >
                                 <option value="cookie">Cookie</option>
                                 <option value="localStorage">localStorage</option>
+                                <option value="sessionStorage">sessionStorage</option>
                               </select>
                             </label>
                             <label className="block">
                               <span className="mb-2 block text-xs font-semibold">
                                 {sessionStorageType === "cookie"
                                   ? "Cookie name"
-                                  : "localStorage key"}
+                                  : `${sessionStorageType} key`}
                               </span>
                               <input
                                 aria-invalid={attempted && !sessionName.trim()}
@@ -448,7 +452,7 @@ export default function EditProject() {
                               />
                             </label>
                           </div>
-                          {sessionStorageType === "localStorage" && (
+                          {sessionStorageType !== "cookie" && (
                             <p className="mt-3 text-[11px] leading-4 text-emerald-700">
                               The application&apos;s own request determines the header and format;
                               Showrun substitutes only its placeholder value.

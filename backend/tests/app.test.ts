@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { AuthenticationProvider } from '../src/auth/providers.js';
-import type { DependencyScanner } from '../src/browser/playwright-bootstrapper.js';
+import type { CompatibilityChecker, DependencyScanner } from '../src/browser/playwright-bootstrapper.js';
 import { buildApp } from '../src/api/app.js';
 import { AppError } from '../src/errors.js';
 import { MemoryShowcaseRepository } from '../src/storage/memory-repository.js';
@@ -34,6 +34,24 @@ class DelayedTokenProvider implements AuthenticationProvider {
   }
 }
 
+class CandidatePasswordProvider implements AuthenticationProvider {
+  readonly kind = 'password' as const;
+  async authenticate() {
+    return {
+      origins: [{
+        origin: 'https://example.com',
+        localStorage: [{ name: 'access_token', value: 'real-browser-token' }],
+      }],
+      sessionCandidates: [{
+        storage: 'localStorage' as const,
+        name: 'access_token',
+        confidence: 'high' as const,
+        requestHeaders: ['authorization'],
+      }],
+    };
+  }
+}
+
 class FixedDependencyScanner implements DependencyScanner {
   async scan() {
     const discoveredAt = new Date().toISOString();
@@ -62,6 +80,30 @@ class FixedDependencyScanner implements DependencyScanner {
   }
 }
 
+class FixedCompatibilityChecker implements CompatibilityChecker {
+  publicUrl = '';
+  sensitiveValues: string[] = [];
+  async check(publicUrl: string, routes: typeof createPayload.routes, sensitiveValues: string[]) {
+    this.publicUrl = publicUrl;
+    this.sensitiveValues = sensitiveValues;
+    return {
+      compatible: true,
+      checkedAt: '2026-09-14T00:00:00.000Z',
+      routes: routes.map((route) => ({
+        path: route.path,
+        status: 200,
+        loaded: true,
+        loginDetected: false,
+        originIsolated: true,
+        mutationsBlocked: true,
+        secretsExposed: false,
+        failedRequests: [],
+        consoleErrors: [],
+      })),
+    };
+  }
+}
+
 describe('showcase API and authentication lifecycle', () => {
   it('creates and lists a showcase without exposing secrets publicly', async () => {
     const repository = new MemoryShowcaseRepository();
@@ -80,6 +122,7 @@ describe('showcase API and authentication lifecycle', () => {
     expect(status.json()).toEqual({
       name: 'Example App',
       slug: 'example-app',
+      publicUrl: 'http://example-app.localhost:3000',
       status: 'auth_required',
       mode: 'selected_routes',
       routes: createPayload.routes,
@@ -252,6 +295,76 @@ describe('showcase API and authentication lifecycle', () => {
     await app.close();
   });
 
+  it('runs compatibility checks against the derived preview origin without returning secrets', async () => {
+    const checker = new FixedCompatibilityChecker();
+    const app = await buildApp({
+      config: testConfig(),
+      repository: new MemoryShowcaseRepository(),
+      policy: publicPolicy(),
+      compatibilityChecker: checker,
+    });
+    const headers = await authenticatedHeaders(app);
+    const created = await app.inject({ method: 'POST', url: '/api/showcases', headers, payload: createPayload });
+    await app.inject({ method: 'POST', url: `/api/showcases/${created.json().id}/prepare`, headers });
+    const response = await app.inject({
+      method: 'POST', url: `/api/showcases/${created.json().id}/compatibility-test`, headers,
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json().compatible).toBe(true);
+    expect(response.body).not.toContain('never-return-this-token');
+    expect(checker.publicUrl).toBe('http://example-app.localhost:3000');
+    expect(checker.sensitiveValues).toContain('Bearer never-return-this-token');
+    await app.close();
+  });
+
+  it('returns only sanitized session detection metadata to the creator', async () => {
+    const app = await buildApp({
+      config: testConfig(),
+      repository: new MemoryShowcaseRepository(),
+      policy: publicPolicy(),
+      providers: [new CandidatePasswordProvider()],
+    });
+    const headers = await authenticatedHeaders(app);
+    const created = await app.inject({
+      method: 'POST',
+      url: '/api/showcases',
+      headers,
+      payload: {
+        ...createPayload,
+        authentication: {
+          provider: 'password',
+          config: {
+            loginUrl: 'https://example.com/login',
+            usernameSelector: '#email',
+            passwordSelector: '#password',
+            submitSelector: 'button[type=submit]',
+            verification: { type: 'expected_selector', selector: '[data-user-menu]' },
+            sessionToken: { storage: 'localStorage', name: 'access_token' },
+          },
+          secret: { username: 'demo@example.com', password: 'private-password' },
+        },
+      },
+    });
+    await app.inject({ method: 'POST', url: `/api/showcases/${created.json().id}/prepare`, headers });
+    const response = await app.inject({
+      method: 'GET', url: `/api/showcases/${created.json().id}/session-diagnostics`, headers,
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({
+      active: true,
+      candidates: [{
+        storage: 'localStorage',
+        name: 'access_token',
+        confidence: 'high',
+        requestHeaders: ['authorization'],
+        selected: true,
+      }],
+    });
+    expect(response.body).not.toContain('real-browser-token');
+    expect(response.body).not.toContain('private-password');
+    await app.close();
+  });
+
   it('rejects credentials placed in plaintext authentication config', async () => {
     const repository = new MemoryShowcaseRepository();
     const app = await buildApp({ config: testConfig(), repository, policy: publicPolicy() });
@@ -326,7 +439,9 @@ describe('showcase API and authentication lifecycle', () => {
     const headers = await authenticatedHeaders(app);
     await app.inject({ method: 'POST', url: '/api/showcases', headers, payload: createPayload });
     const responses = await Promise.all(Array.from({ length: 50 }, () =>
-      app.inject({ method: 'GET', url: '/showcase/example-app/projects' })));
+      app.inject({
+        method: 'GET', url: '/projects', headers: { host: 'example-app.localhost:3000' },
+      })));
     expect(responses.every((response) => response.statusCode === 202)).toBe(true);
     expect(responses.every((response) => response.json().status === 'preparing')).toBe(true);
     await new Promise((resolve) => setTimeout(resolve, 25));

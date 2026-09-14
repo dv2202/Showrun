@@ -5,6 +5,8 @@ import type {
   ShowcaseDependency,
   ShowcaseLoginConfiguration,
   ShowcaseRoute,
+  SessionDiagnostic,
+  CompatibilityReport,
   UpdateShowcaseInput,
 } from "@/lib/types";
 import { ApiError, apiRequest } from "@/services/api";
@@ -21,6 +23,7 @@ interface BackendShowcase {
   id: string;
   name: string;
   slug: string;
+  publicUrl: string;
   targetUrl: string;
   mode: "selected_routes" | "full_application";
   routes: BackendShowcaseRoute[];
@@ -37,6 +40,7 @@ interface BackendShowcase {
 interface PublicShowcaseStatus {
   name: string;
   slug: string;
+  publicUrl: string;
   status: "preparing" | "ready" | "auth_required" | "error";
   mode: "selected_routes" | "full_application";
   routes: BackendShowcaseRoute[];
@@ -76,11 +80,13 @@ function passwordLoginConfiguration(record: BackendShowcase): ShowcaseLoginConfi
     sessionValue &&
     typeof sessionValue === "object" &&
     "storage" in sessionValue &&
-    (sessionValue.storage === "cookie" || sessionValue.storage === "localStorage") &&
+    (sessionValue.storage === "cookie" ||
+      sessionValue.storage === "localStorage" ||
+      sessionValue.storage === "sessionStorage") &&
     "name" in sessionValue &&
     typeof sessionValue.name === "string"
       ? {
-          storage: sessionValue.storage as "cookie" | "localStorage",
+          storage: sessionValue.storage as "cookie" | "localStorage" | "sessionStorage",
           name: sessionValue.name,
         }
       : undefined;
@@ -100,6 +106,7 @@ function toShowcase(record: BackendShowcase): Showcase {
     id: record.id,
     name: record.name,
     slug: record.slug,
+    publicUrl: record.publicUrl,
     description: routes[0]?.description || "Private application showcase.",
     targetUrl: record.targetUrl,
     authMethod:
@@ -129,6 +136,7 @@ function publicToShowcase(record: PublicShowcaseStatus): Showcase {
     id: record.slug,
     name: record.name,
     slug: record.slug,
+    publicUrl: record.publicUrl,
     description: record.routes[0]?.description || "Private application showcase.",
     targetUrl: "",
     authMethod: "password",
@@ -239,7 +247,13 @@ export async function scanShowcaseDependencies(id: string): Promise<Showcase> {
 
 export async function updateDependencyApprovals(
   id: string,
-  approvals: Array<{ path: string; search: string; approved: boolean }>,
+  approvals: Array<{
+    path: string;
+    search: string;
+    originAlias?: string | null;
+    approved: boolean;
+    redactedFields?: string[];
+  }>,
 ): Promise<Showcase> {
   return toShowcase(
     await apiRequest<BackendShowcase>(`/showcases/${encodeURIComponent(id)}/dependencies`, {
@@ -247,6 +261,16 @@ export async function updateDependencyApprovals(
       body: JSON.stringify({ approvals }),
     }),
   );
+}
+
+export async function getSessionDiagnostics(
+  id: string,
+): Promise<{ active: boolean; candidates: SessionDiagnostic[] }> {
+  return apiRequest(`/showcases/${encodeURIComponent(id)}/session-diagnostics`);
+}
+
+export async function testShowcaseCompatibility(id: string): Promise<CompatibilityReport> {
+  return apiRequest(`/showcases/${encodeURIComponent(id)}/compatibility-test`, { method: "POST" });
 }
 
 export async function getShowcaseStatus(slug: string): Promise<PublicShowcaseStatus> {
@@ -267,8 +291,9 @@ export async function prepareShowcase(slug: string, requestedPath?: string): Pro
       };
     }
     if (status.status === "auth_required") {
-      await fetch(`/backend-showcase/${encodeURIComponent(slug)}${knownRoute.path}`, {
+      await fetch(`${status.publicUrl.replace(/\/$/, "")}${knownRoute.path}`, {
         method: "HEAD",
+        mode: "cors",
         credentials: "omit",
       });
     }

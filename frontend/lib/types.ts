@@ -16,7 +16,7 @@ export interface ShowcaseLoginConfiguration {
   submitSelector: string;
   authenticatedSelector: string;
   sessionToken?: {
-    storage: "cookie" | "localStorage";
+    storage: "cookie" | "localStorage" | "sessionStorage";
     name: string;
   };
 }
@@ -27,10 +27,19 @@ export type ShowcaseDependencyCategory =
 export interface ShowcaseDependency {
   path: string;
   targetPath: string;
+  targetOrigin?: string;
+  originAlias?: string | null;
   search: string;
   contentType: string;
   category: ShowcaseDependencyCategory;
   approved: boolean;
+  sessionHeaders?: string[];
+  responseFields?: Array<{
+    path: string;
+    type: "string" | "number" | "boolean" | "null" | "object" | "array";
+    sensitivity: "none" | "possible" | "sensitive";
+  }>;
+  redactedFields?: string[];
   contentHash: string;
   discoveredAt: string;
 }
@@ -39,6 +48,7 @@ export interface Showcase {
   id: string;
   name: string;
   slug: string;
+  publicUrl: string;
   description: string;
   targetUrl: string;
   authMethod: AuthMethod;
@@ -50,6 +60,30 @@ export interface Showcase {
   routes: ShowcaseRoute[];
   dependencies: ShowcaseDependency[];
   login: ShowcaseLoginConfiguration | null;
+}
+
+export interface SessionDiagnostic {
+  storage: "cookie" | "localStorage" | "sessionStorage";
+  name: string;
+  confidence: "high" | "medium" | "low";
+  requestHeaders: string[];
+  selected: boolean;
+}
+
+export interface CompatibilityReport {
+  compatible: boolean;
+  checkedAt: string;
+  routes: Array<{
+    path: string;
+    status: number | null;
+    loaded: boolean;
+    loginDetected: boolean;
+    originIsolated: boolean;
+    mutationsBlocked: boolean;
+    secretsExposed: boolean;
+    failedRequests: string[];
+    consoleErrors: string[];
+  }>;
 }
 export interface CreateShowcaseInput {
   name: string;

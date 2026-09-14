@@ -1,34 +1,32 @@
 import * as cheerio from 'cheerio';
 import type { SessionTokenLocation } from '../domain/types.js';
 
-export const PUBLIC_SESSION_PLACEHOLDER =
-  'eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJzdWIiOiJzaG93cnVuLXB1YmxpYyIsImV4cCI6NDEwMjQ0NDgwMH0.';
-
-function scriptValue(value: string): string {
+function scriptValue(value: unknown): string {
   return JSON.stringify(value).replace(/</g, '\\u003c');
 }
 
-function runtimeBootstrap(
-  documentUrl: URL,
-  targetOrigin: string,
-  slug: string,
-  publicProxyPrefix: string,
-  sessionToken?: SessionTokenLocation,
-): string {
-  const proxyBase = `${publicProxyPrefix.replace(/\/$/, '')}/${encodeURIComponent(slug)}`;
+export interface RewriteContentOptions {
+  documentUrl: URL;
+  originMap: ReadonlyMap<string, string>;
+  sessionToken?: SessionTokenLocation;
+  bridgeToken?: string;
+}
+
+function runtimeBootstrap(options: RewriteContentOptions): string {
+  const storage = options.sessionToken?.storage;
+  const storageKey = storage === 'localStorage' || storage === 'sessionStorage'
+    ? options.sessionToken?.name
+    : null;
+  const bridgeValue = storageKey ? options.bridgeToken ?? null : null;
   return `(() => {
-  const proxyBase = ${scriptValue(proxyBase)};
-  const targetDocument = ${scriptValue(documentUrl.href)};
-  const targetOrigin = ${scriptValue(targetOrigin)};
-  const bridgeKey = ${sessionToken?.storage === 'localStorage' ? scriptValue(sessionToken.name) : 'null'};
-  const bridgeValue = ${sessionToken?.storage === 'localStorage' ? scriptValue(PUBLIC_SESSION_PLACEHOLDER) : 'null'};
-  if (bridgeKey) {
+  const bridgeStorage = ${scriptValue(storage ?? null)};
+  const bridgeKey = ${scriptValue(storageKey)};
+  const bridgeValue = ${scriptValue(bridgeValue)};
+  const installVirtualStorage = (property) => {
+    if (!bridgeKey || !bridgeValue || property !== bridgeStorage) return;
     const values = new Map([[bridgeKey, bridgeValue]]);
     const storage = {
-      getItem(key) {
-        key = String(key);
-        return values.has(key) ? values.get(key) : null;
-      },
+      getItem(key) { key = String(key); return values.has(key) ? values.get(key) : null; },
       setItem(key, value) { values.set(String(key), String(value)); },
       removeItem(key) { values.delete(String(key)); },
       clear() { values.clear(); },
@@ -49,45 +47,20 @@ function runtimeBootstrap(
         return Reflect.set(target, property, value, receiver);
       },
     });
-    try {
-      Object.defineProperty(window, 'localStorage', {
-        configurable: true,
-        get: () => virtualStorage,
-      });
-    } catch {}
+    try { Object.defineProperty(window, property, { configurable: true, get: () => virtualStorage }); } catch {}
+  };
+  installVirtualStorage('localStorage');
+  installVirtualStorage('sessionStorage');
+  if ('serviceWorker' in navigator) {
+    try { Object.defineProperty(navigator, 'serviceWorker', { configurable: true, value: undefined }); } catch {}
   }
-  const rewriteRequestUrl = (value) => {
-    const raw = value instanceof URL ? value.href : String(value);
-    if (raw.startsWith(proxyBase)) return raw;
-    try {
-      const resolved = new URL(raw, targetDocument);
-      if (resolved.origin !== targetOrigin) return raw;
-      return proxyBase + resolved.pathname + resolved.search + resolved.hash;
-    } catch {
-      return raw;
-    }
-  };
-  const nativeFetch = window.fetch.bind(window);
-  window.fetch = (input, init) => {
-    if (input instanceof Request) {
-      const rewritten = new Request(rewriteRequestUrl(input.url), input);
-      return nativeFetch(new Request(rewritten, { ...(init || {}), credentials: 'omit' }));
-    }
-    return nativeFetch(rewriteRequestUrl(input), { ...(init || {}), credentials: 'omit' });
-  };
-  const nativeXhrOpen = XMLHttpRequest.prototype.open;
-  const nativeXhrSend = XMLHttpRequest.prototype.send;
-  XMLHttpRequest.prototype.open = function(method, url, ...rest) {
-    return nativeXhrOpen.call(this, method, rewriteRequestUrl(url), ...rest);
-  };
-  XMLHttpRequest.prototype.send = function(...args) {
-    try { this.withCredentials = false; } catch {}
-    return nativeXhrSend.apply(this, args);
-  };
-  const block = (event) => {
-    event.preventDefault();
-    event.stopImmediatePropagation();
-  };
+  try {
+    Object.defineProperty(window, 'WebSocket', {
+      configurable: true,
+      value: class UnsupportedShowcaseWebSocket { constructor() { throw new Error('WebSockets are disabled in read-only showcases'); } },
+    });
+  } catch {}
+  const block = (event) => { event.preventDefault(); event.stopImmediatePropagation(); };
   for (const type of ['click', 'auxclick', 'dblclick', 'pointerdown', 'pointerup', 'mousedown', 'mouseup', 'touchstart', 'touchend', 'submit', 'change', 'input', 'contextmenu', 'dragstart']) {
     window.addEventListener(type, block, { capture: true, passive: false });
   }
@@ -97,98 +70,58 @@ function runtimeBootstrap(
 })();`;
 }
 
-function proxiedUrl(
-  value: string,
-  documentUrl: URL,
-  targetOrigin: string,
-  slug: string,
-  publicProxyPrefix: string,
-): string | null {
-  if (/^(data:|blob:|mailto:|tel:|javascript:|#)/i.test(value.trim())) return null;
+function rewrittenUrl(value: string, documentUrl: URL, originMap: ReadonlyMap<string, string>): string | null {
+  const trimmed = value.trim();
+  if (/^(data:|blob:|mailto:|tel:|javascript:|#)/i.test(trimmed)) return null;
+  // Relative URLs already resolve against the isolated preview origin.
+  if (!/^(?:https?:)?\/\//i.test(trimmed)) return null;
   try {
-    const resolved = new URL(value, documentUrl);
-    if (!['http:', 'https:'].includes(resolved.protocol) || resolved.origin !== targetOrigin) return null;
-    const prefix = publicProxyPrefix.replace(/\/$/, '');
-    return `${prefix}/${encodeURIComponent(slug)}${resolved.pathname}${resolved.search}${resolved.hash}`;
+    const resolved = new URL(trimmed, documentUrl);
+    const publicOrigin = originMap.get(resolved.origin);
+    return publicOrigin ? `${publicOrigin}${resolved.pathname}${resolved.search}${resolved.hash}` : null;
   } catch {
-    console.warn(`Failed to resolve URL ${value} relative to ${documentUrl.href}`);
     return null;
   }
 }
 
-function rewriteCssText(
-  css: string,
-  documentUrl: URL,
-  targetOrigin: string,
-  slug: string,
-  publicProxyPrefix: string,
-): string {
+function rewriteCssText(css: string, options: RewriteContentOptions): string {
   return css.replace(/url\(\s*(['"]?)([^'"\)]+)\1\s*\)/gi, (full, quote: string, raw: string) => {
-    const rewritten = proxiedUrl(raw, documentUrl, targetOrigin, slug, publicProxyPrefix);
+    const rewritten = rewrittenUrl(raw, options.documentUrl, options.originMap);
     return rewritten ? `url(${quote}${rewritten}${quote})` : full;
   });
 }
 
-export function rewriteContent(
-  body: Buffer,
-  contentType: string,
-  documentUrl: URL,
-  targetOrigin: string,
-  slug: string,
-  publicProxyPrefix = '/showcase',
-  sessionToken?: SessionTokenLocation,
-): Buffer {
-  if (contentType.includes('text/css')) {
-    return Buffer.from(
-      rewriteCssText(body.toString('utf8'), documentUrl, targetOrigin, slug, publicProxyPrefix),
-    );
-  }
+export function rewriteContent(body: Buffer, contentType: string, options: RewriteContentOptions): Buffer {
+  if (contentType.includes('text/css')) return Buffer.from(rewriteCssText(body.toString('utf8'), options));
   if (!contentType.includes('text/html') && !contentType.includes('application/xhtml+xml')) return body;
 
   const $ = cheerio.load(body.toString('utf8'));
-  const attributes = ['href', 'src', 'action', 'poster'];
-  for (const attribute of attributes) {
+  for (const attribute of ['href', 'src', 'action', 'poster']) {
     $(`[${attribute}]`).each((_index, element) => {
       const current = $(element).attr(attribute);
       if (!current) return;
-      const rewritten = proxiedUrl(current, documentUrl, targetOrigin, slug, publicProxyPrefix);
+      const rewritten = rewrittenUrl(current, options.documentUrl, options.originMap);
       if (rewritten) $(element).attr(attribute, rewritten);
     });
   }
   $('[srcset]').each((_index, element) => {
     const current = $(element).attr('srcset');
     if (!current) return;
-    const rewritten = current.split(',').map((candidate) => {
+    $(element).attr('srcset', current.split(',').map((candidate) => {
       const [url, descriptor] = candidate.trim().split(/\s+/, 2);
       if (!url) return candidate;
-      return `${proxiedUrl(url, documentUrl, targetOrigin, slug, publicProxyPrefix) ?? url}${descriptor ? ` ${descriptor}` : ''}`;
-    }).join(', ');
-    $(element).attr('srcset', rewritten);
+      const rewritten = rewrittenUrl(url, options.documentUrl, options.originMap) ?? url;
+      return `${rewritten}${descriptor ? ` ${descriptor}` : ''}`;
+    }).join(', '));
   });
   $('[style]').each((_index, element) => {
     const current = $(element).attr('style');
-    if (current) {
-      $(element).attr(
-        'style',
-        rewriteCssText(current, documentUrl, targetOrigin, slug, publicProxyPrefix),
-      );
-    }
+    if (current) $(element).attr('style', rewriteCssText(current, options));
   });
   $('style').each((_index, element) => {
     const current = $(element).html();
-    if (current) {
-      $(element).html(rewriteCssText(current, documentUrl, targetOrigin, slug, publicProxyPrefix));
-    }
+    if (current) $(element).html(rewriteCssText(current, options));
   });
-  $('base').remove();
-  $('head').prepend(
-    `<script data-showrun-interaction-guard>${runtimeBootstrap(
-      documentUrl,
-      targetOrigin,
-      slug,
-      publicProxyPrefix,
-      sessionToken,
-    )}</script>`,
-  );
+  $('head').prepend(`<script data-showrun-interaction-guard>${runtimeBootstrap(options)}</script>`);
   return Buffer.from($.html());
 }

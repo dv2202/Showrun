@@ -6,10 +6,17 @@ import { useParams } from "next/navigation";
 import { DashboardShell } from "@/components/shell";
 import { useAuth } from "@/components/auth-provider";
 import { CopyButton, Icon, Skeleton, Status } from "@/components/ui";
-import type { Showcase } from "@/lib/types";
+import type {
+  CompatibilityReport,
+  SessionDiagnostic,
+  Showcase,
+  ShowcaseDependency,
+} from "@/lib/types";
 import {
+  getSessionDiagnostics,
   getShowcase,
   scanShowcaseDependencies,
+  testShowcaseCompatibility,
   updateDependencyApprovals,
 } from "@/services/showcases";
 
@@ -19,6 +26,10 @@ export default function ProjectDetail() {
   const [scanning, setScanning] = useState(false);
   const [updatingDependency, setUpdatingDependency] = useState<string | null>(null);
   const [dependencyError, setDependencyError] = useState<string | null>(null);
+  const [sessionDiagnostics, setSessionDiagnostics] = useState<SessionDiagnostic[]>([]);
+  const [compatibility, setCompatibility] = useState<CompatibilityReport | null>(null);
+  const [testingCompatibility, setTestingCompatibility] = useState(false);
+  const [compatibilityError, setCompatibilityError] = useState<string | null>(null);
   const { user } = useAuth();
 
   useEffect(() => {
@@ -26,6 +37,13 @@ export default function ProjectDetail() {
       .then((result) => setProject(result ?? null))
       .catch(() => setProject(null));
   }, [id]);
+
+  useEffect(() => {
+    if (!project?.authenticationConfigured) return;
+    getSessionDiagnostics(id)
+      .then((result) => setSessionDiagnostics(result.candidates))
+      .catch(() => setSessionDiagnostics([]));
+  }, [id, project?.authenticationConfigured, project?.status]);
 
   if (project === undefined) {
     return (
@@ -88,24 +106,49 @@ export default function ProjectDetail() {
       setScanning(false);
     }
   };
-  const toggleDependency = async (path: string, search: string, approved: boolean) => {
+  const updateDependency = async (
+    dependency: ShowcaseDependency,
+    approved: boolean,
+    redactedFields: string[] = [],
+  ) => {
     if (
       approved &&
       !window.confirm(
-        `Allow the public showcase to read ${path}${search}? Its response may be visible to visitors.`,
+        `Allow the public showcase to read ${dependency.path}${dependency.search}? Its response may be visible to visitors.`,
       )
     ) {
       return;
     }
-    const key = `${path}${search}`;
+    const key = `${dependency.originAlias ?? "app"}:${dependency.path}${dependency.search}`;
     setUpdatingDependency(key);
     setDependencyError(null);
     try {
-      setProject(await updateDependencyApprovals(project.id, [{ path, search, approved }]));
+      setProject(
+        await updateDependencyApprovals(project.id, [
+          {
+            path: dependency.path,
+            search: dependency.search,
+            originAlias: dependency.originAlias,
+            approved,
+            redactedFields,
+          },
+        ]),
+      );
     } catch (error) {
       setDependencyError(error instanceof Error ? error.message : "Dependency update failed.");
     } finally {
       setUpdatingDependency(null);
+    }
+  };
+  const runCompatibilityTest = async () => {
+    setTestingCompatibility(true);
+    setCompatibilityError(null);
+    try {
+      setCompatibility(await testShowcaseCompatibility(project.id));
+    } catch (error) {
+      setCompatibilityError(error instanceof Error ? error.message : "Compatibility test failed.");
+    } finally {
+      setTestingCompatibility(false);
     }
   };
   const approvedDependencies = project.dependencies.filter((dependency) => dependency.approved);
@@ -217,49 +260,105 @@ export default function ProjectDetail() {
             {project.dependencies.length ? (
               <div className="max-h-80 divide-y divide-black/10 overflow-y-auto">
                 {project.dependencies.map((dependency) => {
-                  const key = `${dependency.path}${dependency.search}`;
+                  const key = `${dependency.originAlias ?? "app"}:${dependency.path}${dependency.search}`;
                   const automatic = ["script", "style", "font", "image"].includes(
                     dependency.category,
                   );
+                  const sensitiveFields = (dependency.responseFields ?? [])
+                    .filter((field) => field.sensitivity !== "none")
+                    .map((field) => field.path);
                   return (
-                    <div className="flex items-center justify-between gap-4 px-5 py-3" key={key}>
-                      <div className="min-w-0">
-                        <p className="truncate font-mono text-[11px] text-zinc-700" title={key}>
-                          {key}
-                        </p>
-                        <p className="mt-1 text-[9px] font-semibold uppercase tracking-[0.1em] text-zinc-400">
-                          {dependency.category === "read_api"
-                            ? "Page data · GET only"
-                            : dependency.category.replace("_", " ")}
-                        </p>
+                    <div className="px-5 py-3" key={key}>
+                      <div className="flex items-center justify-between gap-4">
+                        <div className="min-w-0">
+                          <p
+                            className="truncate font-mono text-[11px] text-zinc-700"
+                            title={`${dependency.path}${dependency.search}`}
+                          >
+                            {dependency.path}
+                            {dependency.search}
+                          </p>
+                          <p className="mt-1 text-[9px] font-semibold uppercase tracking-[0.1em] text-zinc-400">
+                            {dependency.category === "read_api"
+                              ? "Page data · GET only"
+                              : dependency.category.replace("_", " ")}
+                            {dependency.approved && (dependency.redactedFields?.length ?? 0) > 0
+                              ? ` · ${dependency.redactedFields!.length} fields redacted`
+                              : ""}
+                            {dependency.originAlias
+                              ? ` · isolated ${dependency.originAlias}`
+                              : " · app origin"}
+                          </p>
+                          {dependency.targetOrigin && (
+                            <p className="mt-1 truncate font-mono text-[9px] text-zinc-400">
+                              {dependency.targetOrigin}
+                            </p>
+                          )}
+                          {(dependency.sessionHeaders?.length ?? 0) > 0 && (
+                            <p className="mt-1 truncate font-mono text-[9px] text-emerald-700">
+                              Session bridge: {dependency.sessionHeaders!.join(", ")}
+                            </p>
+                          )}
+                        </div>
+                        {automatic ? (
+                          <span className="shrink-0 text-[10px] font-semibold text-emerald-700">
+                            Auto-published
+                          </span>
+                        ) : (
+                          <div className="flex shrink-0 gap-2">
+                            {dependency.approved ? (
+                              <button
+                                className="h-8 border border-red-200 px-3 text-[10px] font-semibold text-red-700 hover:bg-red-50 disabled:opacity-50"
+                                disabled={updatingDependency === key}
+                                onClick={() => updateDependency(dependency, false)}
+                                type="button"
+                              >
+                                {updatingDependency === key ? "Saving…" : "Block"}
+                              </button>
+                            ) : (
+                              <>
+                                {sensitiveFields.length > 0 && (
+                                  <button
+                                    className="h-8 border border-amber-300 px-3 text-[10px] font-semibold text-amber-800 hover:bg-amber-50 disabled:opacity-50"
+                                    disabled={updatingDependency === key}
+                                    onClick={() =>
+                                      updateDependency(dependency, true, sensitiveFields)
+                                    }
+                                    type="button"
+                                  >
+                                    Allow redacted
+                                  </button>
+                                )}
+                                <button
+                                  className="h-8 border border-black/15 px-3 text-[10px] font-semibold hover:border-black disabled:opacity-50"
+                                  disabled={updatingDependency === key}
+                                  onClick={() => updateDependency(dependency, true)}
+                                  type="button"
+                                >
+                                  {updatingDependency === key ? "Saving…" : "Allow full"}
+                                </button>
+                              </>
+                            )}
+                          </div>
+                        )}
                       </div>
-                      {automatic ? (
-                        <span className="shrink-0 text-[10px] font-semibold text-emerald-700">
-                          Auto-published
-                        </span>
-                      ) : (
-                        <button
-                          className={`h-8 shrink-0 border px-3 text-[10px] font-semibold transition disabled:opacity-50 ${
-                            dependency.approved
-                              ? "border-red-200 text-red-700 hover:bg-red-50"
-                              : "border-black/15 hover:border-black"
-                          }`}
-                          disabled={updatingDependency === key}
-                          onClick={() =>
-                            toggleDependency(
-                              dependency.path,
-                              dependency.search,
-                              !dependency.approved,
-                            )
-                          }
-                          type="button"
-                        >
-                          {updatingDependency === key
-                            ? "Saving…"
-                            : dependency.approved
-                              ? "Block"
-                              : "Allow page data"}
-                        </button>
+                      {(dependency.responseFields?.length ?? 0) > 0 && (
+                        <div className="mt-3 flex flex-wrap gap-1.5">
+                          {dependency.responseFields!.slice(0, 12).map((field) => (
+                            <span
+                              className={`border px-2 py-1 font-mono text-[9px] ${
+                                field.sensitivity === "sensitive"
+                                  ? "border-red-200 bg-red-50 text-red-700"
+                                  : field.sensitivity === "possible"
+                                    ? "border-amber-200 bg-amber-50 text-amber-800"
+                                    : "border-zinc-200 text-zinc-500"
+                              }`}
+                              key={field.path}
+                            >
+                              {field.path} · {field.type}
+                            </span>
+                          ))}
+                        </div>
                       )}
                     </div>
                   );
@@ -283,6 +382,11 @@ export default function ProjectDetail() {
               <div className="border-t border-red-200 bg-red-50 px-5 py-3 text-xs text-red-700">
                 {dependencyError}
               </div>
+            )}
+            {compatibilityError && (
+              <p className="border-t border-red-200 bg-red-50 px-5 py-3 text-[10px] text-red-700">
+                {compatibilityError}
+              </p>
             )}
           </section>
 
@@ -310,6 +414,40 @@ export default function ProjectDetail() {
                 </div>
               ))}
             </div>
+            {sessionDiagnostics.length > 0 && (
+              <div className="border-t border-black/10 px-5 py-4">
+                <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-zinc-400">
+                  Detected session storage
+                </p>
+                <div className="mt-3 space-y-2">
+                  {sessionDiagnostics.map((candidate) => (
+                    <div
+                      className="flex items-center justify-between gap-4 border border-black/10 px-3 py-2"
+                      key={`${candidate.storage}:${candidate.name}`}
+                    >
+                      <div className="min-w-0">
+                        <p className="truncate font-mono text-[10px]">{candidate.name}</p>
+                        <p className="mt-1 text-[9px] uppercase tracking-wide text-zinc-400">
+                          {candidate.storage} · {candidate.confidence} confidence
+                          {candidate.requestHeaders.length
+                            ? ` · used by ${candidate.requestHeaders.join(", ")}`
+                            : ""}
+                        </p>
+                      </div>
+                      <span
+                        className={`shrink-0 text-[9px] font-semibold ${candidate.selected ? "text-emerald-700" : "text-zinc-400"}`}
+                      >
+                        {candidate.selected ? "Active bridge" : "Detected only"}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+                <p className="mt-3 text-[10px] leading-5 text-zinc-500">
+                  Only storage names and request-header names are shown. Real values stay encrypted
+                  on the server.
+                </p>
+              </div>
+            )}
             <div className="flex items-center justify-between border-t border-black/10 bg-zinc-50 px-5 py-4">
               <p className="text-[11px] text-zinc-500">
                 Refresh access before an important review.
@@ -350,6 +488,80 @@ export default function ProjectDetail() {
                 </div>
               ))}
             </dl>
+          </section>
+          <section className="border border-black/10 bg-white">
+            <div className="flex items-center justify-between gap-4 border-b border-black/10 px-5 py-4">
+              <div>
+                <div className="flex items-center gap-2">
+                  <Icon className="h-4 w-4 text-zinc-400" name="shield" />
+                  <h2 className="text-sm font-semibold">Compatibility test</h2>
+                </div>
+                <p className="mt-1 text-[10px] leading-5 text-zinc-500">
+                  Opens every route in a clean browser and verifies isolation, authentication, and
+                  read-only enforcement.
+                </p>
+              </div>
+              <button
+                className="h-9 shrink-0 border border-black/15 px-3 text-[10px] font-semibold hover:border-black disabled:opacity-50"
+                disabled={testingCompatibility}
+                onClick={runCompatibilityTest}
+                type="button"
+              >
+                {testingCompatibility ? "Testing…" : "Run test"}
+              </button>
+            </div>
+            {compatibility ? (
+              <div>
+                <div
+                  className={`px-5 py-3 text-xs font-semibold ${compatibility.compatible ? "bg-emerald-50 text-emerald-800" : "bg-amber-50 text-amber-900"}`}
+                >
+                  {compatibility.compatible
+                    ? "All configured routes passed"
+                    : "One or more routes need attention"}
+                </div>
+                <div className="divide-y divide-black/10">
+                  {compatibility.routes.map((route) => {
+                    const passed =
+                      route.loaded &&
+                      !route.loginDetected &&
+                      route.originIsolated &&
+                      route.mutationsBlocked &&
+                      !route.secretsExposed;
+                    return (
+                      <div className="px-5 py-3" key={route.path}>
+                        <div className="flex items-center justify-between gap-3">
+                          <span className="truncate font-mono text-[10px]">{route.path}</span>
+                          <span
+                            className={`text-[9px] font-semibold ${passed ? "text-emerald-700" : "text-amber-800"}`}
+                          >
+                            {passed ? "Passed" : "Review"}
+                          </span>
+                        </div>
+                        {!passed && (
+                          <p className="mt-1 text-[9px] leading-4 text-zinc-500">
+                            {route.loginDetected ? "Login page detected. " : ""}
+                            {!route.loaded
+                              ? `Load failed${route.status ? ` (${route.status})` : ""}. `
+                              : ""}
+                            {!route.originIsolated ? "Preview left its isolated origin. " : ""}
+                            {!route.mutationsBlocked
+                              ? "Mutation guard could not be verified. "
+                              : ""}
+                            {route.secretsExposed
+                              ? "A private target or session value was exposed. "
+                              : ""}
+                          </p>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            ) : (
+              <p className="px-5 py-4 text-[10px] leading-5 text-zinc-500">
+                Run this after authentication and resource approval, before sharing the showcase.
+              </p>
+            )}
           </section>
           <section className="border border-black/10 bg-[#111310] text-white">
             <div className="border-b border-white/10 px-5 py-4">

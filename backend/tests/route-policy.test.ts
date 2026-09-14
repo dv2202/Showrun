@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   approvedDependency,
+  assertRequestAllowed,
   normalizeRoutePath,
   routeIsAllowed,
 } from '../src/showcases/route-policy.js';
@@ -50,5 +51,21 @@ describe('selected showcase route policy', () => {
     expect(approvedDependency('/assets/app.js', '?v=123', dependencies)).toEqual(dependencies[0]);
     expect(approvedDependency('/assets/app.js', '?v=other', dependencies)).toBeNull();
     expect(approvedDependency('/assets/other.js', '?v=123', dependencies)).toBeNull();
+  });
+
+  it('returns exact dependency metadata even when the path is nested under a route', () => {
+    const dependency = {
+      path: '/projects/api/data',
+      targetPath: '/projects/api/data',
+      search: '',
+      contentType: 'application/json',
+      category: 'read_api' as const,
+      approved: true,
+      sessionHeaders: ['authorization'],
+      contentHash: 'hash',
+      discoveredAt: new Date().toISOString(),
+    };
+
+    expect(assertRequestAllowed('/projects/api/data', '', routes, [dependency])).toBe(dependency);
   });
 });

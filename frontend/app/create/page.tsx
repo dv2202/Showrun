@@ -30,7 +30,9 @@ export default function Create() {
   const [passwordSelector, setPasswordSelector] = useState("");
   const [submitSelector, setSubmitSelector] = useState("");
   const [authenticatedSelector, setAuthenticatedSelector] = useState("");
-  const [sessionStorageType, setSessionStorageType] = useState<"cookie" | "localStorage">("cookie");
+  const [sessionStorageType, setSessionStorageType] = useState<
+    "cookie" | "localStorage" | "sessionStorage"
+  >("cookie");
   const [sessionName, setSessionName] = useState("");
   const [mode, setMode] = useState<ShowcaseMode>("selected_routes");
   const [routes, setRoutes] = useState<ShowcaseRoute[]>(defaultRoutes);
@@ -339,20 +341,22 @@ export default function Create() {
                                 className={inputClass}
                                 onChange={(event) =>
                                   setSessionStorageType(
-                                    event.target.value as "cookie" | "localStorage",
+                                    event.target.value as
+                                      "cookie" | "localStorage" | "sessionStorage",
                                   )
                                 }
                                 value={sessionStorageType}
                               >
                                 <option value="cookie">Cookie</option>
                                 <option value="localStorage">localStorage</option>
+                                <option value="sessionStorage">sessionStorage</option>
                               </select>
                             </label>
                             <label className="block">
                               <span className="mb-2 block text-xs font-semibold">
                                 {sessionStorageType === "cookie"
                                   ? "Cookie name"
-                                  : "localStorage key"}
+                                  : `${sessionStorageType} key`}
                               </span>
                               <input
                                 aria-invalid={attempted && !sessionName.trim()}
@@ -367,7 +371,7 @@ export default function Create() {
                               />
                             </label>
                           </div>
-                          {sessionStorageType === "localStorage" && (
+                          {sessionStorageType !== "cookie" && (
                             <p className="mt-3 text-[11px] leading-4 text-emerald-700">
                               Showrun detects the application&apos;s own request header and format
                               automatically. The real token remains server-side.

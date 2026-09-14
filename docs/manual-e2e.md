@@ -7,13 +7,13 @@ dedicated, least-privilege test account and non-production data.
 
 - Use an HTTPS target that the Showrun backend can reach over the public internet. Loopback,
   private-network, link-local, and metadata addresses are intentionally blocked by SSRF protection.
-- Determine whether login uses cookies or a direct token value in localStorage, then record only the
-  cookie name or localStorage key. Never copy the session value itself.
+- Determine whether login uses cookies or a direct token value in localStorage or sessionStorage, then record only the
+  cookie name or storage key. Never copy the session value itself.
 - Disable CAPTCHA or interactive MFA for the dedicated staging account.
 - Record the login URL and stable CSS selectors for the username field, password field, submit
   control, and an element visible only after successful login.
-- List every route the page needs, including assets and read-only API paths. Showrun does not crawl
-  or infer dependencies.
+- List every navigable route. Showrun discovers supporting assets and read-only API candidates only
+  during the creator-triggered private scan; it never discovers navigable routes from visitor traffic.
 
 ## 2. Start Showrun
 
@@ -29,24 +29,29 @@ Open `http://localhost:3000`, create or sign in to a creator account, and choose
 ## 3. Create and prepare a showcase
 
 1. Enter the staging application URL, dedicated account credentials, login URL, and selectors. If
-   needed, select localStorage and enter its non-secret key name.
+   needed, select localStorage or sessionStorage and enter its non-secret key name.
 2. Choose the showcase mode and explicitly enter the permitted routes.
 3. Create the showcase, open its project page, and choose **Scan & publish**.
-4. Review any detected API/data dependencies and approve only the reads needed by the showcase.
-5. Open the public path and wait for authentication preparation to finish.
+4. Review detected API/data fields and choose block, allow with redaction, or allow full response.
+5. Run the compatibility test, then open the public path and wait for authentication preparation to finish.
+
+The dependency list shows any request header that is eligible for the session bridge. If the target
+changes its authentication header, rescan before publishing; Showrun never substitutes the real token
+into a visitor-selected header.
 
 Pass criteria:
 
 - The iframe shows content from the configured target application, not placeholder content.
-- The username, password, target cookies, real localStorage token, and captured browser state never
+- The username, password, target cookies, real browser-storage token, and captured browser state never
   appear in the page, public status response, browser storage, or browser network response bodies.
-  A synthetic placeholder may appear when the localStorage bridge is enabled.
+  A session-specific synthetic placeholder may appear when the storage bridge is enabled.
 - Refreshing the page reuses the encrypted server-side session while it remains valid.
 
 ## 4. Verify route boundaries
 
 - Open every configured route from the Showrun sidebar and confirm the expected target page loads.
-- Directly request an unconfigured path under `/backend-showcase/<slug>/...`; it must return `404`.
+- Directly request an unconfigured path on `http://<slug>.localhost:4000`; it must return `404`.
+- Try an invented `alias--<slug>.localhost` host and confirm it cannot select another upstream.
 - Test paths that share a prefix, traversal strings, and encoded traversal. They must not reach the
   target unless the normalized path is explicitly allowed.
 - Confirm scripts, styles, fonts, and images detected by the private scan load without appearing in
