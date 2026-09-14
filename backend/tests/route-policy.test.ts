@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { normalizeRoutePath, routeIsAllowed } from '../src/showcases/route-policy.js';
+import {
+  approvedDependency,
+  normalizeRoutePath,
+  routeIsAllowed,
+} from '../src/showcases/route-policy.js';
 
 const routes = [
   { path: '/dashboard', title: 'Dashboard', description: '' },
@@ -30,5 +34,21 @@ describe('selected showcase route policy', () => {
     const rootOnly = [{ path: '/', title: 'Home', description: '' }];
     expect(routeIsAllowed('/', rootOnly)).toBe(true);
     expect(routeIsAllowed('/admin', rootOnly)).toBe(false);
+  });
+
+  it('allows only an approved dependency with the exact captured query', () => {
+    const dependencies = [{
+      path: '/assets/app.js',
+      targetPath: '/assets/app.js',
+      search: '?v=123',
+      contentType: 'application/javascript',
+      category: 'script' as const,
+      approved: true,
+      contentHash: 'hash',
+      discoveredAt: new Date().toISOString(),
+    }];
+    expect(approvedDependency('/assets/app.js', '?v=123', dependencies)).toEqual(dependencies[0]);
+    expect(approvedDependency('/assets/app.js', '?v=other', dependencies)).toBeNull();
+    expect(approvedDependency('/assets/other.js', '?v=123', dependencies)).toBeNull();
   });
 });

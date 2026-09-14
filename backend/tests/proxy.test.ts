@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
+import { gzipSync } from 'node:zlib';
 import { buildApp } from '../src/api/app.js';
+import type { AuthenticationProvider } from '../src/auth/providers.js';
 import { SecureHttpClient, type SecureHttpRequest, type SecureHttpResponse } from '../src/proxy/secure-http-client.js';
 import { MemoryShowcaseRepository } from '../src/storage/memory-repository.js';
 import { authenticatedHeaders, publicPolicy, testConfig } from './helpers.js';
@@ -8,7 +10,11 @@ class RecordingHttpClient extends SecureHttpClient {
   urls: URL[] = [];
   attachedHeaders: Array<Record<string, string | string[] | undefined>> = [];
   nextStatus = 200;
-  nextBody = '<a href="/next">Next</a><a href="https://external.example/docs">External</a>';
+  nextBody: string | Buffer = '<a href="/next">Next</a><a href="https://external.example/docs">External</a>';
+  nextHeaders: Record<string, string> = {
+    'content-type': 'text/html',
+    'set-cookie': 'upstream-secret=value',
+  };
 
   constructor() {
     super(publicPolicy(), 1000, 100_000);
@@ -20,8 +26,8 @@ class RecordingHttpClient extends SecureHttpClient {
     this.attachedHeaders.push(options.headersForUrl?.(url, 0) ?? options.headers ?? {});
     return {
       status: this.nextStatus,
-      headers: { 'content-type': 'text/html', 'set-cookie': 'upstream-secret=value' },
-      body: Buffer.from(this.nextBody),
+      headers: this.nextHeaders,
+      body: Buffer.isBuffer(this.nextBody) ? this.nextBody : Buffer.from(this.nextBody),
       finalUrl: url,
     };
   }
@@ -39,6 +45,19 @@ const payload = {
     secret: { token: 'server-token' },
   },
 };
+
+class StoragePasswordProvider implements AuthenticationProvider {
+  readonly kind = 'password' as const;
+
+  async authenticate() {
+    return {
+      origins: [{
+        origin: 'https://example.com',
+        localStorage: [{ name: 'access_token', value: 'real-access-token' }],
+      }],
+    };
+  }
+}
 
 describe('secure proxy behavior', () => {
   it('always derives upstream from stored configuration and keeps auth server-side', async () => {
@@ -65,6 +84,8 @@ describe('secure proxy behavior', () => {
     expect(http.attachedHeaders[0]!.referer).toBeUndefined();
     expect(http.attachedHeaders[0]!['x-forwarded-host']).toBeUndefined();
     expect(response.headers['set-cookie']).toBeUndefined();
+    expect(response.headers['access-control-allow-origin']).toBe('*');
+    expect(response.headers['cross-origin-resource-policy']).toBe('cross-origin');
     expect(response.body).toContain('/backend-showcase/proxy-app/next');
     expect(response.body).toContain('https://external.example/docs');
     expect(response.body).not.toContain('server-token');
@@ -92,6 +113,137 @@ describe('secure proxy behavior', () => {
     const response = await app.inject({ method: 'GET', url: '/showcase/proxy-app/admin' });
     expect(response.statusCode).toBe(404);
     expect(http.urls).toHaveLength(0);
+    await app.close();
+  });
+
+  it('proxies only approved hidden dependencies using their captured target path and query', async () => {
+    const repository = new MemoryShowcaseRepository();
+    const http = new RecordingHttpClient();
+    const app = await buildApp({ config: testConfig(), repository, policy: publicPolicy(), http });
+    const headers = await authenticatedHeaders(app);
+    const created = await app.inject({ method: 'POST', url: '/api/showcases', headers, payload });
+    await repository.updateShowcase(created.json().id, {
+      dependencies: [{
+        path: '/assets/app.js',
+        targetPath: '/assets/app.js',
+        search: '?v=123',
+        contentType: 'application/javascript',
+        category: 'script',
+        approved: true,
+        contentHash: 'hash',
+        discoveredAt: new Date().toISOString(),
+      }],
+    });
+    await app.inject({ method: 'POST', url: `/api/showcases/${created.json().id}/prepare`, headers });
+
+    const allowed = await app.inject({
+      method: 'GET',
+      url: '/showcase/proxy-app/assets/app.js?v=123',
+    });
+    expect(allowed.statusCode).toBe(200);
+    expect(http.urls.at(-1)?.pathname).toBe('/assets/app.js');
+    expect(http.urls.at(-1)?.search).toBe('?v=123');
+    const requestCount = http.urls.length;
+    expect((await app.inject({
+      method: 'GET',
+      url: '/showcase/proxy-app/assets/app.js?v=other',
+    })).statusCode).toBe(404);
+    expect(http.urls).toHaveLength(requestCount);
+    await app.close();
+  });
+
+  it('decodes compressed target content before rewriting and removes stale encoding headers', async () => {
+    const http = new RecordingHttpClient();
+    http.nextBody = gzipSync(Buffer.from('.hero{background:url("/images/hero.png")}'));
+    http.nextHeaders = {
+      'content-type': 'text/css',
+      'content-encoding': 'gzip',
+      etag: 'upstream-compressed-hash',
+    };
+    const app = await buildApp({
+      config: testConfig(),
+      repository: new MemoryShowcaseRepository(),
+      policy: publicPolicy(),
+      http,
+    });
+    const headers = await authenticatedHeaders(app);
+    const created = await app.inject({ method: 'POST', url: '/api/showcases', headers, payload });
+    await app.inject({ method: 'POST', url: `/api/showcases/${created.json().id}/prepare`, headers });
+
+    const response = await app.inject({ method: 'GET', url: '/showcase/proxy-app/path' });
+    expect(response.statusCode).toBe(200);
+    expect(response.headers['content-encoding']).toBeUndefined();
+    expect(response.headers.etag).toBeUndefined();
+    expect(response.body).toContain('/backend-showcase/proxy-app/images/hero.png');
+    await app.close();
+  });
+
+  it('bridges localStorage auth without exposing the captured token to visitors', async () => {
+    const repository = new MemoryShowcaseRepository();
+    const http = new RecordingHttpClient();
+    const bridgePayload = {
+      ...payload,
+      authentication: {
+        provider: 'password',
+        config: {
+          loginUrl: 'https://example.com/login',
+          usernameSelector: '#email',
+          passwordSelector: '#password',
+          submitSelector: 'button[type=submit]',
+          verification: { type: 'expected_selector', selector: '[data-user-menu]' },
+          storageBridge: {
+            storage: 'localStorage',
+            key: 'access_token',
+            headerName: 'authorization',
+            prefix: 'Bearer ',
+          },
+        },
+        secret: { username: 'demo@example.com', password: 'private-password' },
+      },
+    };
+    const app = await buildApp({
+      config: testConfig(),
+      repository,
+      policy: publicPolicy(),
+      http,
+      providers: [new StoragePasswordProvider()],
+    });
+    const headers = await authenticatedHeaders(app);
+    const created = await app.inject({ method: 'POST', url: '/api/showcases', headers, payload: bridgePayload });
+    await repository.updateShowcase(created.json().id, {
+      dependencies: [{
+        path: '/api/session', targetPath: '/api/session', search: '',
+        contentType: 'application/json', category: 'read_api', approved: true,
+        contentHash: 'session-hash', discoveredAt: new Date().toISOString(),
+      }],
+    });
+    await app.inject({ method: 'POST', url: `/api/showcases/${created.json().id}/authenticate`, headers });
+
+    const page = await app.inject({ method: 'GET', url: '/showcase/proxy-app/path' });
+    expect(page.statusCode).toBe(200);
+    expect(page.body).toContain('const bridgeKey = "access_token"');
+    expect(page.body).not.toContain('real-access-token');
+
+    http.nextHeaders = { 'content-type': 'application/json' };
+    http.nextBody = '{"authenticated":true}';
+    const api = await app.inject({
+      method: 'GET',
+      url: '/showcase/proxy-app/api/session',
+      headers: { authorization: 'Bearer public-placeholder' },
+    });
+    expect(api.statusCode).toBe(200);
+    expect(http.attachedHeaders.at(-1)?.authorization).toBe('Bearer real-access-token');
+    expect(api.body).not.toContain('real-access-token');
+
+    const requestCount = http.urls.length;
+    const preflight = await app.inject({
+      method: 'OPTIONS',
+      url: '/showcase/proxy-app/api/session',
+      headers: { 'access-control-request-headers': 'authorization' },
+    });
+    expect(preflight.statusCode).toBe(204);
+    expect(preflight.headers['access-control-allow-headers']).toContain('authorization');
+    expect(http.urls).toHaveLength(requestCount);
     await app.close();
   });
 

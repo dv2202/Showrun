@@ -8,6 +8,10 @@ export const authenticationInputSchema = z.object({
   secret: z.unknown(),
 });
 
+const authenticationUpdateSchema = authenticationInputSchema.extend({
+  secret: z.unknown().optional(),
+});
+
 const showcaseRouteSchema = z.object({
   path: z.string().min(1).max(500),
   title: z.string().trim().min(1).max(120),
@@ -21,6 +25,13 @@ const loginVerificationSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('absence_of_login_selector'), selector: z.string().min(1).max(500) }),
 ]);
 
+const storageAuthBridgeSchema = z.object({
+  storage: z.literal('localStorage'),
+  key: z.string().min(1).max(200).regex(/^[^\x00-\x1f\x7f]+$/),
+  headerName: z.enum(['authorization', 'x-api-key']),
+  prefix: z.string().max(50).regex(/^[^\r\n]*$/).default(''),
+});
+
 const loginConfigurationSchema = z.object({
   loginUrl: z.string().url(),
   usernameSelector: z.string().min(1).max(500),
@@ -30,6 +41,7 @@ const loginConfigurationSchema = z.object({
   timeoutMs: z.number().int().min(1000).max(60_000).optional(),
   expireOn403: z.boolean().optional(),
   unauthenticatedMarker: z.string().min(1).max(1000).optional(),
+  storageBridge: storageAuthBridgeSchema.optional(),
 });
 
 export const createShowcaseSchema = z.object({
@@ -71,10 +83,17 @@ export const updateShowcaseSchema = z.object({
   targetUrl: z.string().url().optional(),
   mode: z.enum(['selected_routes', 'full_application']).optional(),
   routes: z.array(showcaseRouteSchema).min(1).max(50).optional(),
-  authentication: authenticationInputSchema.optional(),
+  authentication: authenticationUpdateSchema.optional(),
 }).refine((value) => Object.keys(value).length > 0, 'At least one field is required');
 
 export const idParamsSchema = z.object({ id: z.string().uuid() });
+export const dependencyApprovalsSchema = z.object({
+  approvals: z.array(z.object({
+    path: z.string().startsWith('/').max(2000),
+    search: z.string().max(2000),
+    approved: z.boolean(),
+  })).max(250),
+});
 export const slugParamsSchema = z.object({ slug: z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/).max(80) });
 export const proxyParamsSchema = slugParamsSchema.extend({ '*': z.string().default('') });
 

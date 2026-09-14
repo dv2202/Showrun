@@ -95,6 +95,7 @@ export class MemoryShowcaseRepository implements ShowcaseRepository {
     const showcase: Showcase = {
       id: randomUUID(),
       ...input,
+      dependencies: input.dependencies ?? [],
       state: 'CREATED',
       lastErrorCode: null,
       createdAt: now,
@@ -120,7 +121,7 @@ export class MemoryShowcaseRepository implements ShowcaseRepository {
 
   async updateShowcase(
     id: string,
-    patch: Partial<Pick<Showcase, 'name' | 'slug' | 'targetUrl' | 'mode' | 'routes' | 'state' | 'lastErrorCode'>>,
+    patch: Partial<Pick<Showcase, 'name' | 'slug' | 'targetUrl' | 'mode' | 'routes' | 'dependencies' | 'state' | 'lastErrorCode'>>,
   ): Promise<Showcase | null> {
     const existing = this.showcases.get(id);
     if (!existing) return null;

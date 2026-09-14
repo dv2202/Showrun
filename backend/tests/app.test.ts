@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { AuthenticationProvider } from '../src/auth/providers.js';
+import type { DependencyScanner } from '../src/browser/playwright-bootstrapper.js';
 import { buildApp } from '../src/api/app.js';
 import { AppError } from '../src/errors.js';
 import { MemoryShowcaseRepository } from '../src/storage/memory-repository.js';
@@ -30,6 +31,34 @@ class DelayedTokenProvider implements AuthenticationProvider {
     await new Promise((resolve) => setTimeout(resolve, 10));
     if (this.fail) throw new AppError('AUTHENTICATION_FAILED', 'Authentication failed', 422);
     return { headers: { authorization: 'Bearer server-only' } };
+  }
+}
+
+class FixedDependencyScanner implements DependencyScanner {
+  async scan() {
+    const discoveredAt = new Date().toISOString();
+    return [
+      {
+        path: '/assets/app.js',
+        targetPath: '/assets/app.js',
+        search: '',
+        contentType: 'application/javascript',
+        category: 'script' as const,
+        approved: true,
+        contentHash: 'script-hash',
+        discoveredAt,
+      },
+      {
+        path: '/api/dashboard',
+        targetPath: '/api/dashboard',
+        search: '',
+        contentType: 'application/json',
+        category: 'read_api' as const,
+        approved: false,
+        contentHash: 'api-hash',
+        discoveredAt,
+      },
+    ];
   }
 }
 
@@ -106,6 +135,105 @@ describe('showcase API and authentication lifecycle', () => {
     expect((await repository.getShowcaseById(created.json().id))?.showcase).toMatchObject({
       mode: 'full_application',
       routes,
+    });
+    await app.close();
+  });
+
+  it('updates password login mapping without returning or replacing saved credentials', async () => {
+    const repository = new MemoryShowcaseRepository();
+    const app = await buildApp({ config: testConfig(), repository, policy: publicPolicy() });
+    const headers = await authenticatedHeaders(app);
+    const passwordAuthentication = {
+      provider: 'password',
+      config: {
+        loginUrl: 'https://example.com/login',
+        usernameSelector: '#email',
+        passwordSelector: '#password',
+        submitSelector: 'button[type=submit]',
+        verification: { type: 'expected_selector', selector: '[data-user-menu]' },
+      },
+      secret: { username: 'developer@example.com', password: 'private-password' },
+    };
+    const created = await app.inject({
+      method: 'POST',
+      url: '/api/showcases',
+      headers,
+      payload: { ...createPayload, authentication: passwordAuthentication },
+    });
+    const before = await repository.getShowcaseById(created.json().id);
+    const updatedConfig = {
+      ...passwordAuthentication.config,
+      submitSelector: '[data-testid=login-submit]',
+    };
+
+    const updated = await app.inject({
+      method: 'PATCH',
+      url: `/api/showcases/${created.json().id}`,
+      headers,
+      payload: {
+        authentication: { provider: 'password', config: updatedConfig },
+      },
+    });
+
+    expect(updated.statusCode).toBe(200);
+    expect(updated.json()).toMatchObject({
+      authenticationProvider: 'password',
+      authenticationConfig: updatedConfig,
+    });
+    expect(updated.body).not.toContain('developer@example.com');
+    expect(updated.body).not.toContain('private-password');
+    const after = await repository.getShowcaseById(created.json().id);
+    expect(after?.authentication?.config).toEqual(updatedConfig);
+    expect(after?.authentication?.encryptedSecret).toBe(before?.authentication?.encryptedSecret);
+    await app.close();
+  });
+
+  it('scans dependencies as the creator and requires explicit approval for read APIs', async () => {
+    const repository = new MemoryShowcaseRepository();
+    const app = await buildApp({
+      config: testConfig(),
+      repository,
+      policy: publicPolicy(),
+      dependencyScanner: new FixedDependencyScanner(),
+    });
+    const headers = await authenticatedHeaders(app);
+    const created = await app.inject({
+      method: 'POST',
+      url: '/api/showcases',
+      headers,
+      payload: createPayload,
+    });
+
+    const scanned = await app.inject({
+      method: 'POST',
+      url: `/api/showcases/${created.json().id}/scan-dependencies`,
+      headers,
+    });
+    expect(scanned.statusCode).toBe(200);
+    expect(scanned.json().dependencies).toMatchObject([
+      { path: '/assets/app.js', category: 'script', approved: true },
+      { path: '/api/dashboard', category: 'read_api', approved: false },
+    ]);
+
+    const approved = await app.inject({
+      method: 'PATCH',
+      url: `/api/showcases/${created.json().id}/dependencies`,
+      headers,
+      payload: { approvals: [{ path: '/api/dashboard', search: '', approved: true }] },
+    });
+    expect(approved.statusCode).toBe(200);
+    expect(approved.json().dependencies[1]).toMatchObject({
+      path: '/api/dashboard',
+      approved: true,
+    });
+    const rescanned = await app.inject({
+      method: 'POST',
+      url: `/api/showcases/${created.json().id}/scan-dependencies`,
+      headers,
+    });
+    expect(rescanned.json().dependencies[1]).toMatchObject({
+      path: '/api/dashboard',
+      approved: true,
     });
     await app.close();
   });

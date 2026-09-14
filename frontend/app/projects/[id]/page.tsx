@@ -7,11 +7,18 @@ import { DashboardShell } from "@/components/shell";
 import { useAuth } from "@/components/auth-provider";
 import { CopyButton, Icon, Skeleton, Status } from "@/components/ui";
 import type { Showcase } from "@/lib/types";
-import { getShowcase } from "@/services/showcases";
+import {
+  getShowcase,
+  scanShowcaseDependencies,
+  updateDependencyApprovals,
+} from "@/services/showcases";
 
 export default function ProjectDetail() {
   const { id } = useParams<{ id: string }>();
   const [project, setProject] = useState<Showcase | null | undefined>();
+  const [scanning, setScanning] = useState(false);
+  const [updatingDependency, setUpdatingDependency] = useState<string | null>(null);
+  const [dependencyError, setDependencyError] = useState<string | null>(null);
   const { user } = useAuth();
 
   useEffect(() => {
@@ -70,6 +77,39 @@ export default function ProjectDetail() {
       : project.authMethod === "token"
         ? "Token / Header"
         : "Manual Login";
+  const scanDependencies = async () => {
+    setScanning(true);
+    setDependencyError(null);
+    try {
+      setProject(await scanShowcaseDependencies(project.id));
+    } catch (error) {
+      setDependencyError(error instanceof Error ? error.message : "Dependency scan failed.");
+    } finally {
+      setScanning(false);
+    }
+  };
+  const toggleDependency = async (path: string, search: string, approved: boolean) => {
+    if (
+      approved &&
+      !window.confirm(
+        `Allow the public showcase to read ${path}${search}? Its response may be visible to visitors.`,
+      )
+    ) {
+      return;
+    }
+    const key = `${path}${search}`;
+    setUpdatingDependency(key);
+    setDependencyError(null);
+    try {
+      setProject(await updateDependencyApprovals(project.id, [{ path, search, approved }]));
+    } catch (error) {
+      setDependencyError(error instanceof Error ? error.message : "Dependency update failed.");
+    } finally {
+      setUpdatingDependency(null);
+    }
+  };
+  const approvedDependencies = project.dependencies.filter((dependency) => dependency.approved);
+  const reviewDependencies = project.dependencies.filter((dependency) => !dependency.approved);
 
   return (
     <DashboardShell active="Showcases">
@@ -124,6 +164,115 @@ export default function ProjectDetail() {
 
       <div className="grid gap-6 xl:grid-cols-[1.15fr_.85fr]">
         <div className="space-y-6">
+          <section className="border border-black/10 bg-white">
+            <div className="flex flex-col justify-between gap-4 border-b border-black/10 px-5 py-4 sm:flex-row sm:items-center">
+              <div>
+                <div className="flex items-center gap-2">
+                  <Icon className="h-4 w-4 text-zinc-400" name="stack" />
+                  <h2 className="text-sm font-semibold">Supporting resources</h2>
+                </div>
+                <p className="mt-1 text-[11px] leading-5 text-zinc-500">
+                  Detect hidden files and read-only data required by your selected pages.
+                </p>
+              </div>
+              <button
+                className="inline-flex h-9 shrink-0 items-center justify-center gap-2 bg-ink px-3 text-xs font-semibold text-white transition hover:bg-zinc-700 disabled:cursor-not-allowed disabled:opacity-50"
+                disabled={scanning}
+                onClick={scanDependencies}
+                type="button"
+              >
+                <Icon className={scanning ? "animate-spin" : ""} name="pulse" />
+                {scanning ? "Scanning…" : project.dependencies.length ? "Rescan" : "Scan & publish"}
+              </button>
+            </div>
+
+            <div className="grid grid-cols-2 border-b border-black/10 bg-zinc-50">
+              <div className="border-r border-black/10 px-5 py-3">
+                <p className="text-[9px] font-semibold uppercase tracking-[0.12em] text-zinc-400">
+                  Published
+                </p>
+                <p className="mt-1 text-sm font-semibold">{approvedDependencies.length}</p>
+              </div>
+              <div className="px-5 py-3">
+                <p className="text-[9px] font-semibold uppercase tracking-[0.12em] text-zinc-400">
+                  Needs review
+                </p>
+                <p className="mt-1 text-sm font-semibold">{reviewDependencies.length}</p>
+              </div>
+            </div>
+
+            {project.dependencies.length ? (
+              <div className="max-h-80 divide-y divide-black/10 overflow-y-auto">
+                {project.dependencies.map((dependency) => {
+                  const key = `${dependency.path}${dependency.search}`;
+                  const automatic = ["script", "style", "font", "image"].includes(
+                    dependency.category,
+                  );
+                  return (
+                    <div className="flex items-center justify-between gap-4 px-5 py-3" key={key}>
+                      <div className="min-w-0">
+                        <p className="truncate font-mono text-[11px] text-zinc-700" title={key}>
+                          {key}
+                        </p>
+                        <p className="mt-1 text-[9px] font-semibold uppercase tracking-[0.1em] text-zinc-400">
+                          {dependency.category === "read_api"
+                            ? "Page data · GET only"
+                            : dependency.category.replace("_", " ")}
+                        </p>
+                      </div>
+                      {automatic ? (
+                        <span className="shrink-0 text-[10px] font-semibold text-emerald-700">
+                          Auto-published
+                        </span>
+                      ) : (
+                        <button
+                          className={`h-8 shrink-0 border px-3 text-[10px] font-semibold transition disabled:opacity-50 ${
+                            dependency.approved
+                              ? "border-red-200 text-red-700 hover:bg-red-50"
+                              : "border-black/15 hover:border-black"
+                          }`}
+                          disabled={updatingDependency === key}
+                          onClick={() =>
+                            toggleDependency(
+                              dependency.path,
+                              dependency.search,
+                              !dependency.approved,
+                            )
+                          }
+                          type="button"
+                        >
+                          {updatingDependency === key
+                            ? "Saving…"
+                            : dependency.approved
+                              ? "Block"
+                              : "Allow page data"}
+                        </button>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="px-5 py-6 text-center">
+                <p className="text-xs font-semibold">No dependency manifest yet</p>
+                <p className="mt-1 text-[11px] leading-5 text-zinc-500">
+                  Run a private scan before sharing this showcase.
+                </p>
+              </div>
+            )}
+
+            <div className="border-t border-black/10 bg-amber-50 px-5 py-3 text-[10px] leading-5 text-amber-900/70">
+              Static assets are published automatically. Page-data responses may contain account
+              information and stay blocked until you explicitly allow them. Visitor requests can
+              never modify this list.
+            </div>
+            {dependencyError && (
+              <div className="border-t border-red-200 bg-red-50 px-5 py-3 text-xs text-red-700">
+                {dependencyError}
+              </div>
+            )}
+          </section>
+
           <section className="border border-black/10 bg-white">
             <div className="flex items-center justify-between border-b border-black/10 px-5 py-4">
               <div className="flex items-center gap-2">

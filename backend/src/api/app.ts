@@ -9,7 +9,10 @@ import type { ShowcaseRepository } from '../storage/repository.js';
 import { PostgresShowcaseRepository } from '../storage/postgres-repository.js';
 import { PreparationCoordinator } from '../sessions/preparation-coordinator.js';
 import { SecureHttpClient } from '../proxy/secure-http-client.js';
-import { PlaywrightBootstrapper } from '../browser/playwright-bootstrapper.js';
+import {
+  PlaywrightBootstrapper,
+  type DependencyScanner,
+} from '../browser/playwright-bootstrapper.js';
 import {
   AuthenticationProviderRegistry,
   ManualSessionProvider,
@@ -22,10 +25,11 @@ import { CreatorAuthenticationService } from '../auth/creator-authentication-ser
 import { OAuthClient } from '../auth/oauth-client.js';
 import { ShowcaseService, publicShowcaseStatus } from '../showcases/showcase-service.js';
 import { ProxyService } from '../proxy/proxy-service.js';
-import { assertRouteAllowed, normalizeRequestedSuffix } from '../showcases/route-policy.js';
+import { assertRequestAllowed, normalizeRequestedSuffix } from '../showcases/route-policy.js';
 import { pinoRedactPaths } from '../security/redaction.js';
 import {
   createShowcaseSchema,
+  dependencyApprovalsSchema,
   idParamsSchema,
   proxyParamsSchema,
   slugParamsSchema,
@@ -39,6 +43,7 @@ export interface BuildAppOptions {
   policy?: TargetPolicy;
   http?: SecureHttpClient;
   providers?: AuthenticationProvider[];
+  dependencyScanner?: DependencyScanner;
 }
 
 export async function buildApp(options: BuildAppOptions): Promise<FastifyInstance> {
@@ -65,6 +70,7 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
     config.PLAYWRIGHT_HEADLESS === 'true',
     config.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH,
   );
+  const dependencyScanner = options.dependencyScanner ?? browser;
   const providers = new AuthenticationProviderRegistry(options.providers ?? [
     new TokenAuthProvider(),
     new PasswordAuthProvider(browser),
@@ -141,6 +147,32 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
       const { id } = idParamsSchema.parse(request.params);
       return showcases.update(id, updateShowcaseSchema.parse(request.body), creatorId(request));
     });
+    admin.post('/api/showcases/:id/scan-dependencies', {
+      config: { rateLimit: { max: 6, timeWindow: '1 minute' } },
+    }, async (request) => {
+      const { id } = idParamsSchema.parse(request.params);
+      await showcases.get(id, creatorId(request));
+      let material = await authentication.activeMaterial(id);
+      if (!material) {
+        await authentication.prepare(id, true);
+        material = await authentication.activeMaterial(id);
+      }
+      if (!material) {
+        throw new AppError('AUTHENTICATION_FAILED', 'Authentication is required before scanning', 409);
+      }
+      const aggregate = await repository.getShowcaseById(id);
+      const dependencies = await dependencyScanner.scan(
+        aggregate!.showcase.targetUrl,
+        aggregate!.showcase.routes,
+        material,
+      );
+      return showcases.replaceDependencies(id, dependencies, creatorId(request));
+    });
+    admin.patch('/api/showcases/:id/dependencies', async (request) => {
+      const { id } = idParamsSchema.parse(request.params);
+      const { approvals } = dependencyApprovalsSchema.parse(request.body);
+      return showcases.updateDependencyApprovals(id, approvals, creatorId(request));
+    });
     admin.delete('/api/showcases/:id', async (request, reply) => {
       const { id } = idParamsSchema.parse(request.params);
       await showcases.delete(id, creatorId(request));
@@ -182,7 +214,13 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
     const aggregate = await repository.getShowcaseBySlug(parsed.slug);
     if (!aggregate) throw new AppError('NOT_FOUND', 'Showcase not found', 404);
     const requestedPath = normalizeRequestedSuffix(parsed['*']);
-    assertRouteAllowed(requestedPath, aggregate.showcase.routes);
+    const incoming = new URL(request.raw.url ?? '/', 'http://showcase.invalid');
+    assertRequestAllowed(
+      requestedPath,
+      incoming.search,
+      aggregate.showcase.routes,
+      aggregate.showcase.dependencies,
+    );
     if (!(await authentication.hasActiveSession(aggregate.showcase.id))) {
       if (aggregate.authentication && aggregate.showcase.state !== 'ERROR') {
         void authentication.prepare(aggregate.showcase.id).catch((error) => {
@@ -199,15 +237,46 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
   };
   app.route({ method: ['GET', 'HEAD'], url: '/showcase/:slug', handler: proxyHandler });
   app.route({ method: ['GET', 'HEAD'], url: '/showcase/:slug/*', handler: proxyHandler });
+  const preflightHandler = async (request: FastifyRequest, reply: FastifyReply) => {
+    const parsed = proxyParamsSchema.parse(request.params);
+    const aggregate = await repository.getShowcaseBySlug(parsed.slug);
+    if (!aggregate) throw new AppError('NOT_FOUND', 'Showcase not found', 404);
+    const requestedPath = normalizeRequestedSuffix(parsed['*']);
+    const incoming = new URL(request.raw.url ?? '/', 'http://showcase.invalid');
+    assertRequestAllowed(
+      requestedPath,
+      incoming.search,
+      aggregate.showcase.routes,
+      aggregate.showcase.dependencies,
+    );
+    return reply
+      .headers({
+        'access-control-allow-origin': '*',
+        'access-control-allow-methods': 'GET, HEAD, OPTIONS',
+        'access-control-allow-headers': 'authorization, x-api-key, content-type, accept',
+        'access-control-max-age': '600',
+      })
+      .code(204)
+      .send();
+  };
+  app.options('/showcase/:slug', preflightHandler);
+  app.options('/showcase/:slug/*', preflightHandler);
   const readOnlyHandler = async (request: FastifyRequest, reply: FastifyReply) => {
     const parsed = proxyParamsSchema.parse(request.params);
     const aggregate = await repository.getShowcaseBySlug(parsed.slug);
     if (!aggregate) throw new AppError('NOT_FOUND', 'Showcase not found', 404);
-    assertRouteAllowed(normalizeRequestedSuffix(parsed['*']), aggregate.showcase.routes);
+    const requestedPath = normalizeRequestedSuffix(parsed['*']);
+    const incoming = new URL(request.raw.url ?? '/', 'http://showcase.invalid');
+    assertRequestAllowed(
+      requestedPath,
+      incoming.search,
+      aggregate.showcase.routes,
+      aggregate.showcase.dependencies,
+    );
     return reply.code(405).send({ error: { code: 'UNSUPPORTED_APPLICATION', message: 'Showcases are read-only' } });
   };
-  app.route({ method: ['POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'], url: '/showcase/:slug', handler: readOnlyHandler });
-  app.route({ method: ['POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'], url: '/showcase/:slug/*', handler: readOnlyHandler });
+  app.route({ method: ['POST', 'PUT', 'PATCH', 'DELETE'], url: '/showcase/:slug', handler: readOnlyHandler });
+  app.route({ method: ['POST', 'PUT', 'PATCH', 'DELETE'], url: '/showcase/:slug/*', handler: readOnlyHandler });
 
   return app;
 }

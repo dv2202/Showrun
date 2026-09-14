@@ -11,10 +11,36 @@ export type AuthenticationProviderKind = 'token' | 'password' | 'manual_session'
 export type ShowcaseMode = 'selected_routes' | 'full_application';
 export type CreatorProvider = 'github' | 'google';
 
+export interface StorageAuthBridge {
+  storage: 'localStorage';
+  key: string;
+  headerName: 'authorization' | 'x-api-key';
+  prefix: string;
+}
+
 export interface ShowcaseRoute {
   path: string;
   title: string;
   description: string;
+}
+
+export type ShowcaseDependencyCategory =
+  | 'script'
+  | 'style'
+  | 'font'
+  | 'image'
+  | 'read_api'
+  | 'other';
+
+export interface ShowcaseDependency {
+  path: string;
+  targetPath: string;
+  search: string;
+  contentType: string;
+  category: ShowcaseDependencyCategory;
+  approved: boolean;
+  contentHash: string;
+  discoveredAt: string;
 }
 
 export type VerificationStrategy =
@@ -47,6 +73,7 @@ export interface Showcase {
   targetUrl: string;
   mode: ShowcaseMode;
   routes: ShowcaseRoute[];
+  dependencies: ShowcaseDependency[];
   state: ShowcaseState;
   lastErrorCode: string | null;
   createdAt: Date;

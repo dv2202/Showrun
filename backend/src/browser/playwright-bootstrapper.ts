@@ -1,6 +1,13 @@
+import { createHash } from 'node:crypto';
 import { chromium, type Browser, type BrowserContext, type Route } from 'playwright';
 import { AppError } from '../errors.js';
-import type { SessionMaterial, VerificationStrategy } from '../domain/types.js';
+import type {
+  SessionMaterial,
+  ShowcaseDependency,
+  ShowcaseDependencyCategory,
+  ShowcaseRoute,
+  VerificationStrategy,
+} from '../domain/types.js';
 import { SecureHttpClient } from '../proxy/secure-http-client.js';
 import { TargetPolicy } from '../security/target-policy.js';
 
@@ -16,6 +23,39 @@ export interface PasswordBootstrapConfig {
 export interface PasswordSecret {
   username: string;
   password: string;
+}
+
+export interface DependencyScanner {
+  scan(
+    targetUrl: string,
+    routes: ShowcaseRoute[],
+    material: SessionMaterial,
+  ): Promise<ShowcaseDependency[]>;
+}
+
+function dependencyCategory(contentType: string, resourceType: string): ShowcaseDependencyCategory {
+  const mime = contentType.split(';', 1)[0]!.trim().toLowerCase();
+  if (resourceType === 'script' || /(?:javascript|ecmascript|wasm)/.test(mime)) return 'script';
+  if (resourceType === 'stylesheet' || mime === 'text/css') return 'style';
+  if (resourceType === 'font' || mime.startsWith('font/') || /woff|opentype|truetype/.test(mime)) {
+    return 'font';
+  }
+  if (resourceType === 'image' || mime.startsWith('image/')) return 'image';
+  if (resourceType === 'fetch' || resourceType === 'xhr' || /json|xml/.test(mime)) {
+    return 'read_api';
+  }
+  return 'other';
+}
+
+function routeTargetUrl(targetBase: URL, routePath: string): URL {
+  const target = new URL(targetBase);
+  const basePath = targetBase.pathname.endsWith('/') ? targetBase.pathname : `${targetBase.pathname}/`;
+  target.pathname = routePath === '/'
+    ? basePath
+    : `${basePath}${routePath.slice(1)}`.replace(/\/+/g, '/');
+  target.search = '';
+  target.hash = '';
+  return target;
 }
 
 function flattenedHeaders(headers: Record<string, string | string[]>): Record<string, string> {
@@ -126,7 +166,103 @@ export class PlaywrightBootstrapper {
     }
   }
 
-  private async fulfillSecurely(context: BrowserContext, route: Route): Promise<void> {
+  async scan(
+    targetUrl: string,
+    routes: ShowcaseRoute[],
+    material: SessionMaterial,
+  ): Promise<ShowcaseDependency[]> {
+    const targetBase = await this.policy.validate(targetUrl).then((result) => result.url);
+    let browser: Browser | undefined;
+    let context: BrowserContext | undefined;
+    const discovered = new Map<string, ShowcaseDependency>();
+    const pagePaths = new Set(routes.map((route) => routeTargetUrl(targetBase, route.path).pathname));
+    let requestCount = 0;
+    try {
+      browser = await this.launcher.launch({
+        headless: this.headless,
+        ...(this.executablePath ? { executablePath: this.executablePath } : {}),
+      });
+      context = await browser.newContext({
+        serviceWorkers: 'block',
+        storageState: {
+          cookies: material.cookies ?? [],
+          origins: material.origins ?? [],
+        },
+        ...(material.headers ? { extraHTTPHeaders: material.headers } : {}),
+      });
+      await context.route('**/*', async (route) => {
+        const request = route.request();
+        const method = request.method().toUpperCase();
+        let requestUrl: URL;
+        try {
+          requestUrl = new URL(request.url());
+        } catch {
+          await route.abort('blockedbyclient');
+          return;
+        }
+        if (
+          requestUrl.origin !== targetBase.origin ||
+          !['GET', 'HEAD'].includes(method) ||
+          requestCount >= 250
+        ) {
+          await route.abort('blockedbyclient');
+          return;
+        }
+        requestCount += 1;
+        await this.fulfillSecurely(context!, route, (response) => {
+          if (response.status < 200 || response.status >= 400 || pagePaths.has(requestUrl.pathname)) {
+            return;
+          }
+          const contentTypeValue = response.headers['content-type'];
+          const contentType = Array.isArray(contentTypeValue)
+            ? contentTypeValue[0] ?? ''
+            : contentTypeValue ?? '';
+          const category = dependencyCategory(contentType, request.resourceType());
+          const key = `${requestUrl.pathname}${requestUrl.search}`;
+          discovered.set(key, {
+            path: requestUrl.pathname,
+            targetPath: requestUrl.pathname,
+            search: requestUrl.search,
+            contentType,
+            category,
+            approved: ['script', 'style', 'font', 'image'].includes(category),
+            contentHash: createHash('sha256').update(response.body).digest('hex'),
+            discoveredAt: new Date().toISOString(),
+          });
+        });
+      });
+      if ('routeWebSocket' in context) {
+        await context.routeWebSocket('**/*', (socket) => socket.close());
+      }
+      for (const showcaseRoute of routes) {
+        const page = await context.newPage();
+        try {
+          await page.goto(routeTargetUrl(targetBase, showcaseRoute.path).href, {
+            waitUntil: 'domcontentloaded',
+            timeout: 10_000,
+          });
+          await page.waitForTimeout(1_000);
+        } finally {
+          await page.close();
+        }
+      }
+      return [...discovered.values()].sort((left, right) => left.path.localeCompare(right.path));
+    } catch (error) {
+      if (error instanceof AppError) throw error;
+      throw new AppError('PROXY_ERROR', 'Showcase dependencies could not be scanned', 502, {
+        cause: error,
+      });
+    } finally {
+      await context?.close().catch(() => undefined);
+      await browser?.close().catch(() => undefined);
+    }
+  }
+
+  private async fulfillSecurely(
+    context: BrowserContext,
+    route: Route,
+    onResponse?: (response: Awaited<ReturnType<SecureHttpClient['fetch']>>) => void,
+  ): Promise<void> {
     const request = route.request();
     const url = request.url();
     if (!url.startsWith('http://') && !url.startsWith('https://')) {
@@ -140,6 +276,7 @@ export class PlaywrightBootstrapper {
         ...(request.postDataBuffer() ? { body: request.postDataBuffer()! } : {}),
         maxRedirects: 0,
       });
+      onResponse?.(result);
       await applyResponseCookies(context, new URL(url), result.headers);
       await route.fulfill({
         status: result.status,

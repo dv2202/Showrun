@@ -1,5 +1,5 @@
 import { AppError } from '../errors.js';
-import type { ShowcaseRoute } from '../domain/types.js';
+import type { ShowcaseDependency, ShowcaseRoute } from '../domain/types.js';
 
 function repeatedlyDecode(path: string): string {
   let decoded = path;
@@ -53,4 +53,30 @@ export function assertRouteAllowed(requestedPath: string, routes: ShowcaseRoute[
     // Deliberately use NOT_FOUND so visitors cannot distinguish unavailable target paths.
     throw new AppError('NOT_FOUND', 'Showcase route not found', 404);
   }
+}
+
+export function approvedDependency(
+  requestedPath: string,
+  search: string,
+  dependencies: ShowcaseDependency[],
+): ShowcaseDependency | null {
+  const normalized = normalizeRoutePath(requestedPath);
+  return dependencies.find((dependency) =>
+    dependency.approved &&
+    normalizeRoutePath(dependency.path) === normalized &&
+    dependency.search === search
+  ) ?? null;
+}
+
+export function assertRequestAllowed(
+  requestedPath: string,
+  search: string,
+  routes: ShowcaseRoute[],
+  dependencies: ShowcaseDependency[],
+): ShowcaseDependency | null {
+  if (routeIsAllowed(requestedPath, routes)) return null;
+  const dependency = approvedDependency(requestedPath, search, dependencies);
+  if (dependency) return dependency;
+  // Deliberately use NOT_FOUND so visitors cannot distinguish unavailable target paths.
+  throw new AppError('NOT_FOUND', 'Showcase route not found', 404);
 }

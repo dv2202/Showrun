@@ -7,8 +7,8 @@ dedicated, least-privilege test account and non-production data.
 
 - Use an HTTPS target that the Showrun backend can reach over the public internet. Loopback,
   private-network, link-local, and metadata addresses are intentionally blocked by SSRF protection.
-- Confirm that login produces cookies. Targets that keep authentication only in local storage are
-  not supported by the server-side proxy.
+- Determine whether login uses cookies or a direct token value in localStorage. For localStorage,
+  record the key name, outgoing header name, and header prefix; never copy the token value itself.
 - Disable CAPTCHA or interactive MFA for the dedicated staging account.
 - Record the login URL and stable CSS selectors for the username field, password field, submit
   control, and an element visible only after successful login.
@@ -28,16 +28,19 @@ Open `http://localhost:3000`, create or sign in to a creator account, and choose
 
 ## 3. Create and prepare a showcase
 
-1. Enter the staging application URL, dedicated account credentials, login URL, and selectors.
+1. Enter the staging application URL, dedicated account credentials, login URL, and selectors. If
+   needed, enable the localStorage bridge and enter its non-secret key/header mapping.
 2. Choose the showcase mode and explicitly enter the permitted routes.
-3. Create the showcase and open its public path.
-4. Wait for authentication preparation to finish.
+3. Create the showcase, open its project page, and choose **Scan & publish**.
+4. Review any detected API/data dependencies and approve only the reads needed by the showcase.
+5. Open the public path and wait for authentication preparation to finish.
 
 Pass criteria:
 
 - The iframe shows content from the configured target application, not placeholder content.
-- The username, password, target cookies, and captured browser state never appear in the page,
-  public status response, browser storage, or browser network response bodies.
+- The username, password, target cookies, real localStorage token, and captured browser state never
+  appear in the page, public status response, browser storage, or browser network response bodies.
+  A synthetic placeholder may appear when the localStorage bridge is enabled.
 - Refreshing the page reuses the encrypted server-side session while it remains valid.
 
 ## 4. Verify route boundaries
@@ -46,16 +49,19 @@ Pass criteria:
 - Directly request an unconfigured path under `/backend-showcase/<slug>/...`; it must return `404`.
 - Test paths that share a prefix, traversal strings, and encoded traversal. They must not reach the
   target unless the normalized path is explicitly allowed.
-- Check the browser console and network panel for blocked asset or API requests. Add only the
-  minimum read-only dependency paths required by the presentation.
+- Confirm scripts, styles, fonts, and images detected by the private scan load without appearing in
+  Showcase navigation.
+- Confirm detected API/data requests stay blocked until the creator explicitly approves them.
+- Change a captured dependency query string and confirm the request returns `404` without reaching
+  the target.
 
 ## 5. Verify read-only behavior
 
 - Scroll and hover inside the target frame.
 - Try links, buttons, form controls, context menus, drag actions, Enter, and Space. They must not
   activate target actions or navigate the frame.
-- Send `POST`, `PUT`, `PATCH`, `DELETE`, and `OPTIONS` requests to an allowed proxy path. Each must
-  return `405` without reaching the target.
+- Send `POST`, `PUT`, `PATCH`, and `DELETE` requests to an allowed proxy path. Each must return `405`
+  without reaching the target. An `OPTIONS` preflight may return `204`, but must also never reach it.
 - Confirm in the target application's audit log or database that the walkthrough created no writes,
   jobs, uploads, downloads, deployments, or other side effects.
 

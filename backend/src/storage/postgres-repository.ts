@@ -23,6 +23,7 @@ type DbShowcase = QueryResultRow & {
   target_url: string;
   mode: Showcase['mode'];
   routes: Showcase['routes'];
+  dependencies: Showcase['dependencies'];
   state: Showcase['state'];
   last_error_code: string | null;
   created_at: Date;
@@ -77,6 +78,7 @@ function toShowcase(row: DbShowcase): Showcase {
     targetUrl: row.target_url,
     mode: row.mode,
     routes: row.routes,
+    dependencies: row.dependencies,
     state: row.state,
     lastErrorCode: row.last_error_code,
     createdAt: row.created_at,
@@ -248,7 +250,7 @@ export class PostgresShowcaseRepository implements ShowcaseRepository {
 
   async updateShowcase(
     id: string,
-    patch: Partial<Pick<Showcase, 'name' | 'slug' | 'targetUrl' | 'mode' | 'routes' | 'state' | 'lastErrorCode'>>,
+    patch: Partial<Pick<Showcase, 'name' | 'slug' | 'targetUrl' | 'mode' | 'routes' | 'dependencies' | 'state' | 'lastErrorCode'>>,
   ): Promise<Showcase | null> {
     const columns: string[] = [];
     const values: unknown[] = [];
@@ -258,12 +260,13 @@ export class PostgresShowcaseRepository implements ShowcaseRepository {
       ['targetUrl', 'target_url'],
       ['mode', 'mode'],
       ['routes', 'routes'],
+      ['dependencies', 'dependencies'],
       ['state', 'state'],
       ['lastErrorCode', 'last_error_code'],
     ];
     for (const [key, column] of mapping) {
       if (Object.prototype.hasOwnProperty.call(patch, key)) {
-        values.push(key === 'routes' ? JSON.stringify(patch[key]) : patch[key]);
+        values.push(key === 'routes' || key === 'dependencies' ? JSON.stringify(patch[key]) : patch[key]);
         columns.push(`${column} = $${values.length}`);
       }
     }

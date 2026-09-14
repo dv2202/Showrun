@@ -30,6 +30,12 @@ export default function Create() {
   const [passwordSelector, setPasswordSelector] = useState("");
   const [submitSelector, setSubmitSelector] = useState("");
   const [authenticatedSelector, setAuthenticatedSelector] = useState("");
+  const [usesStorageBridge, setUsesStorageBridge] = useState(false);
+  const [storageKey, setStorageKey] = useState("");
+  const [authHeaderName, setAuthHeaderName] = useState<"authorization" | "x-api-key">(
+    "authorization",
+  );
+  const [authHeaderPrefix, setAuthHeaderPrefix] = useState("Bearer ");
   const [mode, setMode] = useState<ShowcaseMode>("selected_routes");
   const [routes, setRoutes] = useState<ShowcaseRoute[]>(defaultRoutes);
   const [attempted, setAttempted] = useState(false);
@@ -43,7 +49,8 @@ export default function Create() {
     usernameSelector.trim() &&
     passwordSelector.trim() &&
     submitSelector.trim() &&
-    authenticatedSelector.trim();
+    authenticatedSelector.trim() &&
+    (!usesStorageBridge || storageKey.trim());
   const routesValid =
     routes.length > 0 && routes.every((route) => route.path.startsWith("/") && route.title.trim());
 
@@ -103,6 +110,16 @@ export default function Create() {
           passwordSelector,
           submitSelector,
           authenticatedSelector,
+          ...(usesStorageBridge
+            ? {
+                storageBridge: {
+                  storage: "localStorage" as const,
+                  key: storageKey.trim(),
+                  headerName: authHeaderName,
+                  prefix: authHeaderPrefix,
+                },
+              }
+            : {}),
         },
         mode,
         routes,
@@ -318,6 +335,67 @@ export default function Create() {
                               </span>
                             </label>
                           ))}
+                        </div>
+                        <div className="border border-black/10 bg-zinc-50 p-4">
+                          <label className="flex cursor-pointer items-start gap-3">
+                            <input
+                              checked={usesStorageBridge}
+                              className="mt-0.5 h-4 w-4 accent-black"
+                              onChange={(event) => setUsesStorageBridge(event.target.checked)}
+                              type="checkbox"
+                            />
+                            <span>
+                              <span className="block text-xs font-semibold">
+                                The app keeps its session token in localStorage
+                              </span>
+                              <span className="mt-1 block text-[11px] leading-4 text-zinc-500">
+                                Showrun will capture the token securely and expose only a harmless
+                                placeholder inside the public showcase.
+                              </span>
+                            </span>
+                          </label>
+                          {usesStorageBridge && (
+                            <div className="mt-4 grid gap-4 sm:grid-cols-2">
+                              <label className="block sm:col-span-2">
+                                <span className="mb-2 block text-xs font-semibold">
+                                  localStorage key
+                                </span>
+                                <input
+                                  aria-invalid={attempted && !storageKey.trim()}
+                                  className={`${inputClass} font-mono text-xs ${attempted && !storageKey.trim() ? "border-red-500 ring-1 ring-red-500" : ""}`}
+                                  onChange={(event) => setStorageKey(event.target.value)}
+                                  placeholder="e.g. access_token"
+                                  value={storageKey}
+                                />
+                              </label>
+                              <label className="block">
+                                <span className="mb-2 block text-xs font-semibold">API header</span>
+                                <select
+                                  className={inputClass}
+                                  onChange={(event) =>
+                                    setAuthHeaderName(
+                                      event.target.value as "authorization" | "x-api-key",
+                                    )
+                                  }
+                                  value={authHeaderName}
+                                >
+                                  <option value="authorization">Authorization</option>
+                                  <option value="x-api-key">X-API-Key</option>
+                                </select>
+                              </label>
+                              <label className="block">
+                                <span className="mb-2 block text-xs font-semibold">
+                                  Header prefix
+                                </span>
+                                <input
+                                  className={`${inputClass} font-mono text-xs`}
+                                  onChange={(event) => setAuthHeaderPrefix(event.target.value)}
+                                  placeholder="Bearer "
+                                  value={authHeaderPrefix}
+                                />
+                              </label>
+                            </div>
+                          )}
                         </div>
                       </div>
                       {attempted && !loginMappingValid && (

@@ -23,6 +23,9 @@ describe('target-origin response rewriting', () => {
     expect(output).toContain('/backend-showcase/demo/search');
     expect(output).toContain('/backend-showcase/demo/images/hero.png');
     expect(output).toContain('/backend-showcase/demo/tile.png');
+    expect(output).toContain('window.fetch =');
+    expect(output).toContain('XMLHttpRequest.prototype.open =');
+    expect(output).toContain('const proxyBase = "/backend-showcase/demo"');
     expect(output).toContain('https://external.example/docs');
     expect(output).toContain('https://external.example/large.png 2x');
     expect(output).toContain('data-showrun-interaction-guard');
@@ -37,5 +40,28 @@ describe('target-origin response rewriting', () => {
     ).toString();
     expect(output).toContain('url(\'/showcase/demo/a.png\')');
     expect(output).toContain('url(https://cdn.example/b.png)');
+  });
+
+  it('installs a non-secret localStorage bridge before target scripts', () => {
+    const output = rewriteContent(
+      Buffer.from('<html><head><script src="/app.js"></script></head><body></body></html>'),
+      'text/html',
+      new URL('https://private.example/dashboard'),
+      'https://private.example',
+      'demo',
+      '/backend-showcase',
+      {
+        storage: 'localStorage',
+        key: 'access_token',
+        headerName: 'authorization',
+        prefix: 'Bearer ',
+      },
+    ).toString();
+
+    expect(output).toContain('const bridgeKey = "access_token"');
+    expect(output).toContain("Object.defineProperty(window, 'localStorage'");
+    expect(output).toContain("credentials: 'omit'");
+    expect(output).not.toContain('real-access-token');
+    expect(output.indexOf('data-showrun-interaction-guard')).toBeLessThan(output.indexOf('src="/backend-showcase/demo/app.js"'));
   });
 });

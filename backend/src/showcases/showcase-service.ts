@@ -1,6 +1,12 @@
 import { randomBytes } from 'node:crypto';
 import { AppError } from '../errors.js';
-import type { AuthenticationProviderKind, Showcase, ShowcaseRoute } from '../domain/types.js';
+import type {
+  AuthenticationConfig,
+  AuthenticationProviderKind,
+  Showcase,
+  ShowcaseDependency,
+  ShowcaseRoute,
+} from '../domain/types.js';
 import { EncryptionService } from '../security/encryption.js';
 import { TargetPolicy } from '../security/target-policy.js';
 import type { ShowcaseRepository } from '../storage/repository.js';
@@ -27,12 +33,39 @@ export interface UpdateShowcaseInput {
   targetUrl?: string;
   mode?: 'selected_routes' | 'full_application';
   routes?: ShowcaseRoute[];
-  authentication?: AuthenticationInput;
+  authentication?: Omit<AuthenticationInput, 'secret'> & { secret?: unknown };
+}
+
+function editableAuthenticationConfig(authentication: AuthenticationConfig | null) {
+  if (authentication?.provider !== 'password') return null;
+  const source = authentication.config;
+  const config: Record<string, unknown> = {};
+  for (const key of [
+    'loginUrl',
+    'usernameSelector',
+    'passwordSelector',
+    'submitSelector',
+    'timeoutMs',
+    'expireOn403',
+    'unauthenticatedMarker',
+    'storageBridge',
+  ]) {
+    if (source[key] !== undefined) config[key] = source[key];
+  }
+  const verification = source.verification;
+  if (verification && typeof verification === 'object' && 'type' in verification) {
+    const safeVerification: Record<string, unknown> = { type: verification.type };
+    for (const key of ['selector', 'url', 'match', 'expectedStatus']) {
+      if (key in verification) safeVerification[key] = verification[key as keyof typeof verification];
+    }
+    config.verification = safeVerification;
+  }
+  return config;
 }
 
 export function creatorShowcase(
   showcase: Showcase,
-  authenticationProvider: AuthenticationProviderKind | null,
+  authentication: AuthenticationConfig | null,
 ) {
   return {
     id: showcase.id,
@@ -41,10 +74,12 @@ export function creatorShowcase(
     targetUrl: showcase.targetUrl,
     mode: showcase.mode,
     routes: showcase.routes,
+    dependencies: showcase.dependencies,
     state: showcase.state,
     lastErrorCode: showcase.lastErrorCode,
-    authenticationConfigured: authenticationProvider !== null,
-    authenticationProvider,
+    authenticationConfigured: authentication !== null,
+    authenticationProvider: authentication?.provider ?? null,
+    authenticationConfig: editableAuthenticationConfig(authentication),
     createdAt: showcase.createdAt,
     updatedAt: showcase.updatedAt,
   };
@@ -106,7 +141,7 @@ export class ShowcaseService {
     const showcases = await this.repository.listShowcases(userId);
     return Promise.all(showcases.map(async (showcase) => {
       const aggregate = await this.repository.getShowcaseById(showcase.id);
-      return creatorShowcase(showcase, aggregate?.authentication?.provider ?? null);
+      return creatorShowcase(showcase, aggregate?.authentication ?? null);
     }));
   }
 
@@ -115,7 +150,7 @@ export class ShowcaseService {
     if (!aggregate || aggregate.showcase.userId !== userId) {
       throw new AppError('NOT_FOUND', 'Showcase not found', 404);
     }
-    return creatorShowcase(aggregate.showcase, aggregate.authentication?.provider ?? null);
+    return creatorShowcase(aggregate.showcase, aggregate.authentication ?? null);
   }
 
   async update(id: string, input: UpdateShowcaseInput, userId: string) {
@@ -132,22 +167,69 @@ export class ShowcaseService {
       patch.targetUrl = (await this.policy.validate(input.targetUrl)).url.href;
       patch.state = 'CREATED';
       patch.lastErrorCode = null;
+      patch.dependencies = [];
       invalidateSession = true;
     }
     if (input.mode !== undefined) patch.mode = input.mode;
-    if (input.routes !== undefined) patch.routes = this.normalizeRoutes(input.routes);
+    if (input.routes !== undefined) {
+      patch.routes = this.normalizeRoutes(input.routes);
+      patch.dependencies = [];
+    }
     try {
       await this.repository.updateShowcase(id, patch);
       if (input.authentication) {
-        await this.configureAuthentication(id, input.authentication);
+        await this.updateAuthentication(id, input.authentication, aggregate.authentication);
         invalidateSession = true;
-        await this.repository.updateShowcase(id, { state: 'CREATED', lastErrorCode: null });
+        await this.repository.updateShowcase(id, {
+          dependencies: [],
+          state: 'CREATED',
+          lastErrorCode: null,
+        });
       }
       if (invalidateSession) await this.repository.deleteSession(id);
     } catch (error) {
       if (error instanceof AppError) throw error;
       throw new AppError('CONFLICT', 'The showcase could not be updated', 409, { cause: error });
     }
+    return this.get(id, userId);
+  }
+
+  async replaceDependencies(id: string, dependencies: ShowcaseDependency[], userId: string) {
+    const aggregate = await this.repository.getShowcaseById(id);
+    if (!aggregate || aggregate.showcase.userId !== userId) {
+      throw new AppError('NOT_FOUND', 'Showcase not found', 404);
+    }
+    const previousApprovals = new Set(
+      aggregate.showcase.dependencies
+        .filter((dependency) => dependency.approved)
+        .map((dependency) => `${dependency.path}\u0000${dependency.search}`),
+    );
+    const merged = dependencies.map((dependency) => ({
+      ...dependency,
+      approved:
+        dependency.approved || previousApprovals.has(`${dependency.path}\u0000${dependency.search}`),
+    }));
+    await this.repository.updateShowcase(id, { dependencies: merged });
+    return this.get(id, userId);
+  }
+
+  async updateDependencyApprovals(
+    id: string,
+    approvals: Array<{ path: string; search: string; approved: boolean }>,
+    userId: string,
+  ) {
+    const aggregate = await this.repository.getShowcaseById(id);
+    if (!aggregate || aggregate.showcase.userId !== userId) {
+      throw new AppError('NOT_FOUND', 'Showcase not found', 404);
+    }
+    const decisions = new Map(
+      approvals.map((approval) => [`${approval.path}\u0000${approval.search}`, approval.approved]),
+    );
+    const dependencies = aggregate.showcase.dependencies.map((dependency) => {
+      const approved = decisions.get(`${dependency.path}\u0000${dependency.search}`);
+      return approved === undefined ? dependency : { ...dependency, approved };
+    });
+    await this.repository.updateShowcase(id, { dependencies });
     return this.get(id, userId);
   }
 
@@ -184,7 +266,33 @@ export class ShowcaseService {
     });
   }
 
-  private async validateAuthenticationUrls(authentication?: AuthenticationInput): Promise<void> {
+  private async updateAuthentication(
+    showcaseId: string,
+    authentication: Omit<AuthenticationInput, 'secret'> & { secret?: unknown },
+    existing: AuthenticationConfig | null,
+  ): Promise<void> {
+    this.assertNoPlaintextSecrets(authentication.config);
+    if (authentication.secret === undefined && (!existing || existing.provider !== authentication.provider)) {
+      throw new AppError(
+        'VALIDATION_ERROR',
+        'Credentials are required when configuring a new authentication provider',
+        400,
+      );
+    }
+    await this.repository.saveAuthentication({
+      showcaseId,
+      provider: authentication.provider,
+      config: authentication.config,
+      encryptedSecret:
+        authentication.secret === undefined
+          ? existing!.encryptedSecret
+          : this.encryption.encrypt(authentication.secret),
+    });
+  }
+
+  private async validateAuthenticationUrls(
+    authentication?: Pick<AuthenticationInput, 'provider' | 'config'>,
+  ): Promise<void> {
     if (!authentication) return;
     this.assertNoPlaintextSecrets(authentication.config);
     if (authentication.provider !== 'password') return;

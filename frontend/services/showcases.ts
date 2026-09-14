@@ -1,4 +1,12 @@
-import type { CreateShowcaseInput, PrepareState, Showcase, ShowcaseRoute } from "@/lib/types";
+import type {
+  CreateShowcaseInput,
+  PrepareState,
+  Showcase,
+  ShowcaseDependency,
+  ShowcaseLoginConfiguration,
+  ShowcaseRoute,
+  UpdateShowcaseInput,
+} from "@/lib/types";
 import { ApiError, apiRequest } from "@/services/api";
 
 type BackendState = "CREATED" | "PREPARING" | "ACTIVE" | "AUTHENTICATION_EXPIRED" | "ERROR";
@@ -16,10 +24,12 @@ interface BackendShowcase {
   targetUrl: string;
   mode: "selected_routes" | "full_application";
   routes: BackendShowcaseRoute[];
+  dependencies: ShowcaseDependency[];
   state: BackendState;
   lastErrorCode: string | null;
   authenticationConfigured: boolean;
   authenticationProvider?: "token" | "password" | "manual_session" | null;
+  authenticationConfig?: Record<string, unknown> | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -47,6 +57,50 @@ function formatDate(value: string): string {
   }).format(new Date(value));
 }
 
+function passwordLoginConfiguration(record: BackendShowcase): ShowcaseLoginConfiguration | null {
+  if (record.authenticationProvider !== "password" || !record.authenticationConfig) return null;
+  const config = record.authenticationConfig;
+  const verification = config.verification;
+  if (!verification || typeof verification !== "object") return null;
+  const selector = "selector" in verification ? verification.selector : null;
+  const fields = [
+    config.loginUrl,
+    config.usernameSelector,
+    config.passwordSelector,
+    config.submitSelector,
+    selector,
+  ];
+  if (!fields.every((value) => typeof value === "string")) return null;
+  const bridgeValue = config.storageBridge;
+  const storageBridge =
+    bridgeValue &&
+    typeof bridgeValue === "object" &&
+    "storage" in bridgeValue &&
+    bridgeValue.storage === "localStorage" &&
+    "key" in bridgeValue &&
+    typeof bridgeValue.key === "string" &&
+    "headerName" in bridgeValue &&
+    (bridgeValue.headerName === "authorization" || bridgeValue.headerName === "x-api-key")
+      ? {
+          storage: "localStorage" as const,
+          key: bridgeValue.key,
+          headerName: bridgeValue.headerName as "authorization" | "x-api-key",
+          prefix:
+            "prefix" in bridgeValue && typeof bridgeValue.prefix === "string"
+              ? bridgeValue.prefix
+              : "",
+        }
+      : undefined;
+  return {
+    loginUrl: config.loginUrl as string,
+    usernameSelector: config.usernameSelector as string,
+    passwordSelector: config.passwordSelector as string,
+    submitSelector: config.submitSelector as string,
+    authenticatedSelector: selector as string,
+    ...(storageBridge ? { storageBridge } : {}),
+  };
+}
+
 function toShowcase(record: BackendShowcase): Showcase {
   const routes = routesWithIds(record.slug, record.routes);
   return {
@@ -61,6 +115,7 @@ function toShowcase(record: BackendShowcase): Showcase {
         : record.authenticationProvider === "manual_session"
           ? "manual"
           : "password",
+    authenticationConfigured: record.authenticationConfigured,
     status:
       record.state === "ACTIVE"
         ? "active"
@@ -71,6 +126,8 @@ function toShowcase(record: BackendShowcase): Showcase {
     createdAt: formatDate(record.createdAt),
     mode: record.mode,
     routes,
+    dependencies: record.dependencies ?? [],
+    login: passwordLoginConfiguration(record),
   };
 }
 
@@ -82,11 +139,14 @@ function publicToShowcase(record: PublicShowcaseStatus): Showcase {
     description: record.routes[0]?.description || "Private application showcase.",
     targetUrl: "",
     authMethod: "password",
+    authenticationConfigured: false,
     status: record.status === "ready" ? "active" : "needs_attention",
     lastAuthenticated: record.status === "ready" ? "Session active" : "Not active",
     createdAt: "",
     mode: record.mode,
     routes: routesWithIds(record.slug, record.routes),
+    dependencies: [],
+    login: null,
   };
 }
 
@@ -122,6 +182,7 @@ export async function createShowcase(input: CreateShowcaseInput): Promise<Showca
             type: "expected_selector",
             selector: input.login.authenticatedSelector,
           },
+          ...(input.login.storageBridge ? { storageBridge: input.login.storageBridge } : {}),
         },
         secret: input.credentials,
       },
@@ -130,10 +191,7 @@ export async function createShowcase(input: CreateShowcaseInput): Promise<Showca
   return toShowcase(created);
 }
 
-export async function updateShowcase(
-  id: string,
-  input: Partial<CreateShowcaseInput>,
-): Promise<Showcase> {
+export async function updateShowcase(id: string, input: UpdateShowcaseInput): Promise<Showcase> {
   const payload: Record<string, unknown> = {};
   if (input.name !== undefined) payload.name = input.name;
   if (input.targetUrl !== undefined) payload.targetUrl = input.targetUrl;
@@ -144,6 +202,23 @@ export async function updateShowcase(
       title,
       description,
     }));
+  }
+  if (input.login !== undefined) {
+    payload.authentication = {
+      provider: "password",
+      config: {
+        loginUrl: input.login.loginUrl,
+        usernameSelector: input.login.usernameSelector,
+        passwordSelector: input.login.passwordSelector,
+        submitSelector: input.login.submitSelector,
+        verification: {
+          type: "expected_selector",
+          selector: input.login.authenticatedSelector,
+        },
+        ...(input.login.storageBridge ? { storageBridge: input.login.storageBridge } : {}),
+      },
+      ...(input.credentials ? { secret: input.credentials } : {}),
+    };
   }
   return toShowcase(
     await apiRequest<BackendShowcase>(`/showcases/${encodeURIComponent(id)}`, {
@@ -157,6 +232,26 @@ export async function reauthenticateShowcase(id: string): Promise<Showcase> {
   return toShowcase(
     await apiRequest<BackendShowcase>(`/showcases/${encodeURIComponent(id)}/re-authenticate`, {
       method: "POST",
+    }),
+  );
+}
+
+export async function scanShowcaseDependencies(id: string): Promise<Showcase> {
+  return toShowcase(
+    await apiRequest<BackendShowcase>(`/showcases/${encodeURIComponent(id)}/scan-dependencies`, {
+      method: "POST",
+    }),
+  );
+}
+
+export async function updateDependencyApprovals(
+  id: string,
+  approvals: Array<{ path: string; search: string; approved: boolean }>,
+): Promise<Showcase> {
+  return toShowcase(
+    await apiRequest<BackendShowcase>(`/showcases/${encodeURIComponent(id)}/dependencies`, {
+      method: "PATCH",
+      body: JSON.stringify({ approvals }),
     }),
   );
 }

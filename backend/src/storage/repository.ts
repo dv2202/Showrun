@@ -4,6 +4,7 @@ import type {
   Showcase,
   ShowcaseAggregate,
   ShowcaseMode,
+  ShowcaseDependency,
   ShowcaseRoute,
   ShowcaseState,
   StoredSession,
@@ -19,6 +20,7 @@ export interface CreateShowcaseRecord {
   targetUrl: string;
   mode: ShowcaseMode;
   routes: ShowcaseRoute[];
+  dependencies?: ShowcaseDependency[];
 }
 
 export interface SaveAuthenticationRecord {
@@ -47,7 +49,7 @@ export interface ShowcaseRepository {
   getShowcaseBySlug(slug: string): Promise<ShowcaseAggregate | null>;
   updateShowcase(
     id: string,
-    patch: Partial<Pick<Showcase, 'name' | 'slug' | 'targetUrl' | 'mode' | 'routes' | 'state' | 'lastErrorCode'>>,
+    patch: Partial<Pick<Showcase, 'name' | 'slug' | 'targetUrl' | 'mode' | 'routes' | 'dependencies' | 'state' | 'lastErrorCode'>>,
   ): Promise<Showcase | null>;
   saveAuthentication(input: SaveAuthenticationRecord): Promise<AuthenticationConfig>;
   saveSession(showcaseId: string, encryptedState: string, expiresAt: Date): Promise<StoredSession>;

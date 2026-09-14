@@ -1,11 +1,13 @@
 import type { FastifyRequest } from 'fastify';
-import type { SessionMaterial, ShowcaseAggregate } from '../domain/types.js';
+import { promisify } from 'node:util';
+import { brotliDecompress, gunzip, inflate } from 'node:zlib';
+import type { SessionMaterial, ShowcaseAggregate, StorageAuthBridge } from '../domain/types.js';
 import { AppError } from '../errors.js';
 import { AuthenticationService } from '../auth/authentication-service.js';
 import type { ShowcaseRepository } from '../storage/repository.js';
 import { rewriteContent } from './content-rewriter.js';
 import { SecureHttpClient, type SecureHttpResponse } from './secure-http-client.js';
-import { assertRouteAllowed, normalizeRequestedSuffix } from '../showcases/route-policy.js';
+import { assertRequestAllowed, normalizeRequestedSuffix } from '../showcases/route-policy.js';
 
 const blockedRequestHeaders = new Set([
   'authorization', 'cookie', 'host', 'connection', 'keep-alive', 'proxy-authenticate',
@@ -15,11 +17,38 @@ const blockedRequestHeaders = new Set([
 ]);
 const blockedResponseHeaders = new Set([
   'set-cookie', 'authorization', 'proxy-authenticate', 'connection', 'keep-alive',
-  'te', 'trailer', 'transfer-encoding', 'upgrade', 'content-length',
+  'te', 'trailer', 'transfer-encoding', 'upgrade', 'content-length', 'content-encoding',
+  'content-md5', 'digest', 'etag',
   'content-security-policy', 'content-security-policy-report-only', 'location',
   'content-location', 'refresh', 'link', 'set-cookie2', 'proxy-connection',
   'x-frame-options',
 ]);
+
+const gunzipAsync = promisify(gunzip);
+const inflateAsync = promisify(inflate);
+const brotliDecompressAsync = promisify(brotliDecompress);
+
+async function decodedResponseBody(response: SecureHttpResponse): Promise<Buffer> {
+  const encodingValue = response.headers['content-encoding'];
+  const encoding = (Array.isArray(encodingValue) ? encodingValue.join(',') : encodingValue ?? '')
+    .split(',')
+    .map((value) => value.trim().toLowerCase())
+    .filter((value) => value && value !== 'identity');
+  let body = response.body;
+  try {
+    for (const value of encoding.reverse()) {
+      if (value === 'gzip' || value === 'x-gzip') body = await gunzipAsync(body);
+      else if (value === 'deflate') body = await inflateAsync(body);
+      else if (value === 'br') body = await brotliDecompressAsync(body);
+      else throw new Error(`Unsupported content encoding: ${value}`);
+    }
+    return body;
+  } catch (error) {
+    throw new AppError('PROXY_ERROR', 'Target response encoding could not be decoded', 502, {
+      cause: error,
+    });
+  }
+}
 
 class Semaphore {
   private active = 0;
@@ -48,6 +77,37 @@ function cookieHeader(material: SessionMaterial, url: URL): string | undefined {
       (cookie.expires === -1 || cookie.expires > now);
   }).map((cookie) => `${cookie.name}=${cookie.value}`);
   return values.length ? values.join('; ') : undefined;
+}
+
+function configuredStorageBridge(aggregate: ShowcaseAggregate): StorageAuthBridge | undefined {
+  if (aggregate.authentication?.provider !== 'password') return undefined;
+  const value = aggregate.authentication.config.storageBridge;
+  if (!value || typeof value !== 'object') return undefined;
+  const candidate = value as Record<string, unknown>;
+  if (candidate.storage !== 'localStorage' || typeof candidate.key !== 'string' ||
+    !['authorization', 'x-api-key'].includes(String(candidate.headerName)) ||
+    (candidate.prefix !== undefined && typeof candidate.prefix !== 'string')) return undefined;
+  return {
+    storage: 'localStorage',
+    key: candidate.key,
+    headerName: candidate.headerName as StorageAuthBridge['headerName'],
+    prefix: typeof candidate.prefix === 'string' ? candidate.prefix : '',
+  };
+}
+
+function bridgedStorageValue(
+  material: SessionMaterial,
+  targetOrigin: string,
+  bridge: StorageAuthBridge,
+): string | undefined {
+  const origin = material.origins?.find((entry) => {
+    try {
+      return new URL(entry.origin).origin === targetOrigin;
+    } catch {
+      return false;
+    }
+  });
+  return origin?.localStorage.find((item) => item.name === bridge.key)?.value;
 }
 
 function requestHeaders(request: FastifyRequest): Record<string, string | string[] | undefined> {
@@ -107,16 +167,34 @@ export class ProxyService {
     const release = await this.semaphore.acquire();
     try {
       const requestedPath = normalizeRequestedSuffix(suffix);
-      assertRouteAllowed(requestedPath, aggregate.showcase.routes);
+      const incoming = new URL(request.raw.url ?? '/', 'http://showcase.invalid');
+      const dependency = assertRequestAllowed(
+        requestedPath,
+        incoming.search,
+        aggregate.showcase.routes,
+        aggregate.showcase.dependencies,
+      );
       const material = await this.authentication.activeMaterial(aggregate.showcase.id);
       if (!material) throw new AppError('AUTHENTICATION_EXPIRED', 'Showcase authentication is required', 401);
       const targetBase = new URL(aggregate.showcase.targetUrl);
+      const storageBridge = configuredStorageBridge(aggregate);
+      const bridgedValue = storageBridge
+        ? bridgedStorageValue(material, targetBase.origin, storageBridge)
+        : undefined;
+      if (storageBridge && !bridgedValue) {
+        throw new AppError(
+          'AUTHENTICATION_EXPIRED',
+          `The captured session does not contain localStorage key "${storageBridge.key}"`,
+          401,
+        );
+      }
       const target = new URL(targetBase);
       const basePath = targetBase.pathname.endsWith('/') ? targetBase.pathname : `${targetBase.pathname}/`;
-      target.pathname = requestedPath === '/'
-        ? basePath
-        : `${basePath}${requestedPath.slice(1)}`.replace(/\/+/g, '/');
-      const incoming = new URL(request.raw.url ?? '/', 'http://showcase.invalid');
+      target.pathname = dependency
+        ? normalizeRequestedSuffix(dependency.targetPath)
+        : requestedPath === '/'
+          ? basePath
+          : `${basePath}${requestedPath.slice(1)}`.replace(/\/+/g, '/');
       target.search = incoming.search;
 
       const baseHeaders = requestHeaders(request);
@@ -129,7 +207,12 @@ export class ProxyService {
           const headers = { ...baseHeaders };
           const cookie = cookieHeader(material, url);
           if (cookie) headers.cookie = cookie;
-          if (url.origin === targetBase.origin) Object.assign(headers, material.headers ?? {});
+          if (url.origin === targetBase.origin) {
+            Object.assign(headers, material.headers ?? {});
+            if (storageBridge && bridgedValue) {
+              headers[storageBridge.headerName] = `${storageBridge.prefix}${bridgedValue}`;
+            }
+          }
           return headers;
         },
       });
@@ -141,19 +224,23 @@ export class ProxyService {
       await this.repository.recordVisit(aggregate.showcase.id, response.status);
       const contentTypeValue = response.headers['content-type'];
       const contentType = Array.isArray(contentTypeValue) ? contentTypeValue[0] ?? '' : contentTypeValue ?? '';
+      const decodedBody = await decodedResponseBody(response);
       const body = rewriteContent(
-        response.body,
+        decodedBody,
         contentType,
         response.finalUrl,
         targetBase.origin,
         aggregate.showcase.slug,
         this.publicProxyPrefix,
+        storageBridge,
       );
       return {
         status: response.status,
         headers: {
           ...responseHeaders(response),
           'content-length': String(body.length),
+          'access-control-allow-origin': '*',
+          'cross-origin-resource-policy': 'cross-origin',
           'content-security-policy': "default-src 'self' data: blob: 'unsafe-inline' 'unsafe-eval'; connect-src 'self'; frame-ancestors 'self'; base-uri 'self'",
         },
         body,

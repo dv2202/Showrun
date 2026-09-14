@@ -88,8 +88,7 @@ Create/configure authentication in this shape:
   "mode": "selected_routes",
   "routes": [
     { "path": "/dashboard", "title": "Dashboard", "description": "Main dashboard" },
-    { "path": "/projects", "title": "Projects", "description": "Project management UI" },
-    { "path": "/assets", "title": "Static assets", "description": "Required page assets" }
+    { "path": "/projects", "title": "Projects", "description": "Project management UI" }
   ],
   "authentication": {
     "provider": "password",
@@ -98,6 +97,12 @@ Create/configure authentication in this shape:
       "usernameSelector": "#email",
       "passwordSelector": "#password",
       "submitSelector": "button[type=submit]",
+      "storageBridge": {
+        "storage": "localStorage",
+        "key": "access_token",
+        "headerName": "authorization",
+        "prefix": "Bearer "
+      },
       "verification": { "type": "expected_selector", "selector": "[data-user-menu]" }
     },
     "secret": { "username": "account@example.com", "password": "..." }
@@ -111,11 +116,22 @@ For the common password flow, `username` and `password` may instead be supplied 
 
 Verification also supports `expected_url`, `authenticated_endpoint`, and `absence_of_login_selector`. Secrets and captured session material are encrypted before persistence. Public responses never contain target URLs, provider details, credentials, tokens, cookies, or Playwright state.
 
+`storageBridge` is optional and intended for applications whose frontend checks a direct token value
+in `localStorage`. The creator supplies only the key and outgoing header mapping. Showrun captures the
+real value after login, keeps it encrypted server-side, gives the sandbox a non-secret placeholder,
+and substitutes the real value only on approved upstream reads.
+
+After creating a showcase, `POST /api/showcases/:id/scan-dependencies` performs a creator-only,
+authenticated browser scan of the explicitly configured pages. Same-origin static scripts, styles,
+fonts, and images are saved in a hidden dependency manifest and approved automatically. Read-only
+API requests are saved as unapproved candidates and can be approved with
+`PATCH /api/showcases/:id/dependencies`. Visitor requests never add to or modify the manifest.
+
 ## Security properties
 
 - Only stored target configuration selects an upstream. Visitor headers, query values, and request bodies cannot select a target.
-- Only configured showcase routes are reachable. A configured `/projects` route permits `/projects` and nested paths such as `/projects/42`, but not `/projects-private`; `/` permits only the exact root. Traversal and multiply encoded traversal are rejected.
-- Showcase traffic is read-only: only `GET` and `HEAD` are accepted. `POST`, `PUT`, `PATCH`, `DELETE`, and `OPTIONS` return `405` without reaching the target.
+- Only configured showcase routes and frozen, approved supporting dependencies are reachable. A configured `/projects` route permits `/projects` and nested paths such as `/projects/42`, but not `/projects-private`; `/` permits only the exact root. Traversal and multiply encoded traversal are rejected.
+- Showcase traffic is read-only: only `GET` and `HEAD` reach the target. `POST`, `PUT`, `PATCH`, and `DELETE` return `405`; approved `OPTIONS` requests receive a local CORS preflight response and never reach the target.
 - Every HTTP/HTTPS hop is resolved and checked immediately before a connection pinned to the validated address. All DNS answers must be public. Redirects are independently revalidated.
 - Loopback, private, link-local, multicast, reserved, metadata, IPv4-mapped IPv6, and unsupported protocols are rejected.
 - Incoming visitor cookies/authorization are removed. Session cookies and configured auth headers are attached only server-side. `Set-Cookie`, auth, hop-by-hop, and conflicting framing headers are removed from proxy responses.
@@ -129,8 +145,12 @@ Verification also supports `expected_url`, `authenticated_endpoint`, and `absenc
 
 - WebSocket applications are explicitly unsupported.
 - Rewriting covers HTML `href`, `src`, `action`, `poster`, `srcset`, inline/style-block CSS URLs, and CSS responses. JavaScript string rewriting, streaming responses, downloads larger than the configured response cap, signed absolute URLs, and complex CSP-dependent applications are not supported.
-- Password-authenticated targets must use cookies for subsequent HTTP authentication. Target credentials kept only in local storage cannot be safely attached by the server-side proxy and are unsupported.
-- Developers must explicitly configure every required page, asset, and read-only API route. The backend never crawls or discovers dependencies.
+- Direct token values in `localStorage` are supported through the explicit storage bridge. Serialized
+  objects, nested token fields, rotating browser-side refresh flows, IndexedDB, and sessionStorage are
+  not yet supported.
+- Developers explicitly configure every navigable page. Supporting same-origin dependencies are
+  discovered only during a creator-triggered scan; static resources are approved automatically,
+  while API/data requests require explicit approval. Public traffic can never expand access.
 - JavaScript-generated absolute URLs are not rewritten. Applications that construct root-relative
   asset or API URLs at runtime may need target-specific changes before they render correctly.
 - The preparation coordinator deduplicates within one backend process. Run one backend replica for this MVP; add a PostgreSQL advisory-lock implementation before horizontal API scaling.

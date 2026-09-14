@@ -15,6 +15,13 @@ const verificationSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('absence_of_login_selector'), selector: z.string().min(1).max(500) }),
 ]);
 
+const storageAuthBridgeSchema = z.object({
+  storage: z.literal('localStorage'),
+  key: z.string().min(1).max(200).regex(/^[^\x00-\x1f\x7f]+$/),
+  headerName: z.enum(['authorization', 'x-api-key']),
+  prefix: z.string().max(50).regex(/^[^\r\n]*$/).default(''),
+});
+
 const passwordConfigSchema = z.object({
   loginUrl: z.string().url(),
   usernameSelector: z.string().min(1).max(500),
@@ -22,6 +29,7 @@ const passwordConfigSchema = z.object({
   submitSelector: z.string().min(1).max(500),
   verification: verificationSchema,
   timeoutMs: z.number().int().min(1000).max(60_000).optional(),
+  storageBridge: storageAuthBridgeSchema.optional(),
 });
 const passwordSecretSchema = z.object({ username: z.string().min(1), password: z.string().min(1) });
 
@@ -29,10 +37,25 @@ export class PasswordAuthProvider implements AuthenticationProvider {
   readonly kind = 'password' as const;
   constructor(private readonly browser: PlaywrightBootstrapper) {}
 
-  authenticate(config: Record<string, unknown>, secret: unknown): Promise<SessionMaterial> {
+  async authenticate(config: Record<string, unknown>, secret: unknown): Promise<SessionMaterial> {
     const parsedConfig = passwordConfigSchema.parse(config);
     const parsedSecret = passwordSecretSchema.parse(secret);
-    return this.browser.authenticate(parsedConfig, parsedSecret);
+    const material = await this.browser.authenticate(parsedConfig, parsedSecret);
+    if (parsedConfig.storageBridge) {
+      const captured = material.origins?.some((origin) =>
+        origin.localStorage.some((item) =>
+          item.name === parsedConfig.storageBridge!.key && item.value.length > 0,
+        ),
+      );
+      if (!captured) {
+        throw new AppError(
+          'AUTHENTICATION_FAILED',
+          `Login succeeded, but localStorage key "${parsedConfig.storageBridge.key}" was not found`,
+          422,
+        );
+      }
+    }
+    return material;
   }
 }
 
