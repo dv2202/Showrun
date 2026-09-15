@@ -1,23 +1,19 @@
 # Manual end-to-end verification
 
 Run this checklist with a staging copy of the private application before sharing a showcase. Use a
-dedicated, least-privilege test account and non-production data.
+dedicated read-only account and non-production data.
 
 ## 1. Prepare the target
 
-- Use an HTTPS target that the Showrun backend can reach over the public internet. Loopback,
-  private-network, link-local, and metadata addresses are intentionally blocked by SSRF protection.
-- Determine whether login uses cookies or a direct token value in localStorage or sessionStorage, then record only the
-  cookie name or storage key. Never copy the session value itself.
-- Disable CAPTCHA or interactive MFA for the dedicated staging account.
-- Record the login URL and stable CSS selectors for the username field, password field, submit
-  control, and an element visible only after successful login.
-- List every navigable route. Showrun discovers supporting assets and read-only API candidates only
-  during the creator-triggered private scan; it never discovers navigable routes from visitor traffic.
+- Use an HTTPS application the Showrun backend can reach. Loopback, private-network, link-local,
+  reserved, and cloud-metadata destinations are intentionally blocked.
+- Create a dedicated account that cannot write, delete, deploy, invite users, change settings, or
+  access unrelated secrets.
+- List every top-level route reviewers should be able to open.
+- If the app needs WebSockets, service workers, popup login, WebAuthn, file upload/download, or POST
+  requests to load data, record that as a current compatibility limitation before testing.
 
 ## 2. Start Showrun
-
-From the repository root:
 
 ```bash
 npm --prefix backend run db:migrate
@@ -26,60 +22,68 @@ npm run dev
 
 Open `http://localhost:3000`, create or sign in to a creator account, and choose **Create showcase**.
 
-## 3. Create and prepare a showcase
+## 3. Create and authenticate
 
-1. Enter the staging application URL, dedicated account credentials, login URL, and selectors. If
-   needed, select localStorage or sessionStorage and enter its non-secret key name.
-2. Choose the showcase mode and explicitly enter the permitted routes.
-3. Create the showcase, open its project page, and choose **Scan & publish**.
-4. Review detected API/data fields and choose block, allow with redaction, or allow full response.
-5. Run the compatibility test, then open the public path and wait for authentication preparation to finish.
-
-The dependency list shows any request header that is eligible for the session bridge. If the target
-changes its authentication header, rescan before publishing; Showrun never substitutes the real token
-into a visitor-selected header.
+1. Enter only the application's HTTPS URL. No username, password, selector, cookie name, or bearer
+   token belongs in the creation form.
+2. Choose the showcase mode and add the permitted sidebar routes.
+3. Choose **Create and sign in**.
+4. On the Connect page, confirm the login URL and open the controlled browser.
+5. Enter the dedicated target-account credentials inside the controlled browser and complete login.
+6. After the authenticated application is visibly loaded, choose **I’m logged in — save session**.
+7. Confirm the project page reports an active controlled-browser session.
 
 Pass criteria:
 
-- The iframe shows content from the configured target application, not placeholder content.
-- The username, password, target cookies, real browser-storage token, and captured browser state never
-  appear in the page, public status response, browser storage, or browser network response bodies.
-  A session-specific synthetic placeholder may appear when the storage bridge is enabled.
-- Refreshing the page reuses the encrypted server-side session while it remains valid.
+- Login works without CSS selectors or token configuration.
+- The username and password do not appear in the showcase configuration or project page.
+- The public status response contains no target URL, cookie, storage value, credential, or bearer
+  token.
+- Refreshing the project page reuses the encrypted captured state until its configured TTL expires.
 
-## 4. Verify route boundaries
+## 4. Verify the public remote browser
 
-- Open every configured route from the Showrun sidebar and confirm the expected target page loads.
-- Directly request an unconfigured path on `http://<slug>.localhost:4000`; it must return `404`.
-- Try an invented `alias--<slug>.localhost` host and confirm it cannot select another upstream.
-- Test paths that share a prefix, traversal strings, and encoded traversal. They must not reach the
-  target unless the normalized path is explicitly allowed.
-- Confirm scripts, styles, fonts, and images detected by the private scan load without appearing in
-  Showcase navigation.
-- Confirm detected API/data requests stay blocked until the creator explicitly approves them.
-- Change a captured dependency query string and confirm the request returns `404` without reaching
-  the target.
+1. Open the public showcase URL in a private/incognito window.
+2. Confirm the content appears inside the Showrun browser viewport—not an iframe and not placeholder
+   content.
+3. Open every route from the Showrun sidebar.
+4. Confirm browser hover, scrolling, safe controls, and text entry respond remotely.
+5. Confirm the browser status bar says **Controlled browser connected**.
+6. Open browser developer tools on the Showrun page and confirm network responses contain JPEG
+   frames, not target HTML, application JavaScript, target API JSON, cookies, or authorization
+   values.
 
-## 5. Verify read-only behavior
+## 5. Verify boundaries and read-only behavior
 
-- Scroll and hover inside the target frame.
-- Try links, buttons, form controls, context menus, drag actions, Enter, and Space. They must not
-  activate target actions or navigate the frame.
-- Send `POST`, `PUT`, `PATCH`, and `DELETE` requests to an allowed proxy path. Each must return `405`
-  without reaching the target. An `OPTIONS` preflight may return `204`, but must also never reach it.
-- Confirm in the target application's audit log or database that the walkthrough created no writes,
-  jobs, uploads, downloads, deployments, or other side effects.
+- Attempt an unconfigured top-level navigation from inside the target app. It must be blocked.
+- Try configured routes with traversal, encoded traversal, sibling prefixes, queries, and fragments.
+  They must not select a new target or escape the configured route boundary.
+- Trigger actions that normally use `POST`, `PUT`, `PATCH`, or `DELETE`. The controlled-browser bar
+  must increase its blocked-request count and the target must remain unchanged.
+- Confirm WebSockets, downloads, uploads, dialogs, and popups do not succeed.
+- Confirm in the target application's audit log and database that the walkthrough created no writes,
+  jobs, invitations, uploads, deployments, or other side effects.
+- Test any links or endpoints that mutate through `GET`. Exclude them from the showcase and remove
+  permission at the target-account level; Showrun cannot infer that a nominally safe method mutates.
 
-## 6. Verify failure and expiry handling
+## 6. Verify isolation and expiry
 
-- Temporarily invalidate the staging credentials or session and confirm the public viewer shows a
-  generic unavailable state without internal details.
-- Sign in as the creator, re-authenticate the project, and confirm it returns to the active state.
-- Confirm one creator cannot read, edit, prepare, or delete another creator's showcase by changing
-  the project ID.
+- Open the same showcase in two private browser windows and confirm their navigation, scroll, and
+  input state do not affect each other.
+- Close one window and confirm the other continues working.
+- Leave a viewer idle longer than `REMOTE_BROWSER_IDLE_TTL_SECONDS`; its next frame must fail and a
+  refresh must create a new isolated context.
+- Invalidate the target session, confirm the public showcase becomes unavailable, then use
+  **Refresh session** on the project page and sign in again.
+- Confirm one creator cannot open or capture another creator's login browser by changing project IDs.
+- Restart the backend and confirm all live remote-browser contexts are destroyed.
 
 ## Release gate
 
-Do not share a target publicly until every configured navigation route renders correctly, required
-dependencies are minimal, all interaction tests are blocked, no target mutation is observed, and no
-credential or session material is visible to the browser.
+Do not share the showcase until every configured route renders, the target account is independently
+read-only, unsafe requests are blocked, no target mutation is observed, and no credential/session
+material appears in visitor-visible storage or network responses.
+
+For a production release, also load-test the expected number of simultaneous Chromium contexts and
+replace JPEG polling with a WebRTC browser-streaming service if the measured latency or bandwidth is
+not acceptable.

@@ -1,6 +1,9 @@
 import type {
   CreateShowcaseInput,
   PrepareState,
+  RemoteBrowserFrame,
+  RemoteBrowserInput,
+  RemoteBrowserSession,
   Showcase,
   ShowcaseDependency,
   ShowcaseLoginConfiguration,
@@ -112,9 +115,9 @@ function toShowcase(record: BackendShowcase): Showcase {
     authMethod:
       record.authenticationProvider === "token"
         ? "token"
-        : record.authenticationProvider === "manual_session"
-          ? "manual"
-          : "password",
+        : record.authenticationProvider === "password"
+          ? "password"
+          : "browser",
     authenticationConfigured: record.authenticationConfigured,
     status:
       record.state === "ACTIVE"
@@ -139,7 +142,7 @@ function publicToShowcase(record: PublicShowcaseStatus): Showcase {
     publicUrl: record.publicUrl,
     description: record.routes[0]?.description || "Private application showcase.",
     targetUrl: "",
-    authMethod: "password",
+    authMethod: "browser",
     authenticationConfigured: false,
     status: record.status === "ready" ? "active" : "needs_attention",
     lastAuthenticated: record.status === "ready" ? "Session active" : "Not active",
@@ -165,6 +168,24 @@ export async function getShowcase(id: string): Promise<Showcase | undefined> {
 }
 
 export async function createShowcase(input: CreateShowcaseInput): Promise<Showcase> {
+  const authentication =
+    input.login && input.credentials
+      ? {
+          provider: "password" as const,
+          config: {
+            loginUrl: input.login.loginUrl,
+            usernameSelector: input.login.usernameSelector,
+            passwordSelector: input.login.passwordSelector,
+            submitSelector: input.login.submitSelector,
+            verification: {
+              type: "expected_selector" as const,
+              selector: input.login.authenticatedSelector,
+            },
+            ...(input.login.sessionToken ? { sessionToken: input.login.sessionToken } : {}),
+          },
+          secret: input.credentials,
+        }
+      : undefined;
   const created = await apiRequest<BackendShowcase>("/showcases", {
     method: "POST",
     body: JSON.stringify({
@@ -172,21 +193,7 @@ export async function createShowcase(input: CreateShowcaseInput): Promise<Showca
       targetUrl: input.targetUrl,
       mode: input.mode,
       routes: input.routes.map(({ path, title, description }) => ({ path, title, description })),
-      authentication: {
-        provider: "password",
-        config: {
-          loginUrl: input.login.loginUrl,
-          usernameSelector: input.login.usernameSelector,
-          passwordSelector: input.login.passwordSelector,
-          submitSelector: input.login.submitSelector,
-          verification: {
-            type: "expected_selector",
-            selector: input.login.authenticatedSelector,
-          },
-          ...(input.login.sessionToken ? { sessionToken: input.login.sessionToken } : {}),
-        },
-        secret: input.credentials,
-      },
+      ...(authentication ? { authentication } : {}),
     }),
   });
   return toShowcase(created);
@@ -290,18 +297,11 @@ export async function prepareShowcase(slug: string, requestedPath?: string): Pro
         showcase: publicToShowcase(status),
       };
     }
-    if (status.status === "auth_required") {
-      await fetch(`${status.publicUrl.replace(/\/$/, "")}${knownRoute.path}`, {
-        method: "HEAD",
-        mode: "cors",
-        credentials: "omit",
-      });
-    }
-    if (status.status === "auth_required" || status.status === "preparing") {
+    if (status.status === "preparing") {
       for (let attempt = 0; attempt < 15; attempt += 1) {
         await new Promise((resolve) => window.setTimeout(resolve, 400));
         status = await getShowcaseStatus(slug);
-        if (status.status !== "preparing" && status.status !== "auth_required") break;
+        if (status.status !== "preparing") break;
       }
     }
     const showcase = publicToShowcase(status);
@@ -317,4 +317,101 @@ export async function prepareShowcase(slug: string, requestedPath?: string): Pro
   } catch {
     return { state: "target_unavailable", projectName: "Showcase" };
   }
+}
+
+const runtimeHeaders = (session: RemoteBrowserSession) => ({
+  "x-showrun-runtime-token": session.token,
+});
+
+export async function startViewerBrowser(
+  slug: string,
+  path: string,
+): Promise<RemoteBrowserSession> {
+  return apiRequest(`/showcases/${encodeURIComponent(slug)}/remote-browser`, {
+    method: "POST",
+    body: JSON.stringify({ path, viewport: { width: 1440, height: 900 } }),
+  });
+}
+
+export async function startAuthenticationBrowser(
+  id: string,
+  initialUrl?: string,
+): Promise<RemoteBrowserSession> {
+  return apiRequest(`/showcases/${encodeURIComponent(id)}/auth-browser`, {
+    method: "POST",
+    body: JSON.stringify({
+      ...(initialUrl ? { initialUrl } : {}),
+      viewport: { width: 1440, height: 900 },
+    }),
+  });
+}
+
+export async function getRemoteBrowserFrame(
+  session: RemoteBrowserSession,
+): Promise<RemoteBrowserFrame> {
+  const response = await fetch(
+    `/backend-api/remote-browser/${encodeURIComponent(session.id)}/frame`,
+    { credentials: "include", cache: "no-store", headers: runtimeHeaders(session) },
+  );
+  if (!response.ok) {
+    let body: { error?: { code?: string; message?: string } } = {};
+    try {
+      body = (await response.json()) as typeof body;
+    } catch {
+      // Keep the safe fallback when the response is not JSON.
+    }
+    throw new ApiError(
+      body.error?.message ?? "The remote browser frame could not be loaded.",
+      response.status,
+      body.error?.code,
+    );
+  }
+  const blob = await response.blob();
+  const encodedPath = response.headers.get("x-showrun-current-path") ?? "";
+  return {
+    url: URL.createObjectURL(blob),
+    currentPath: encodedPath ? decodeURIComponent(encodedPath) : session.currentPath,
+    blockedRequests: Number(response.headers.get("x-showrun-blocked-requests") ?? "0"),
+  };
+}
+
+export async function sendRemoteBrowserInput(
+  session: RemoteBrowserSession,
+  input: RemoteBrowserInput,
+): Promise<void> {
+  await apiRequest(`/remote-browser/${encodeURIComponent(session.id)}/input`, {
+    method: "POST",
+    headers: runtimeHeaders(session),
+    body: JSON.stringify(input),
+  });
+}
+
+export async function navigateRemoteBrowser(
+  session: RemoteBrowserSession,
+  path: string,
+): Promise<void> {
+  await apiRequest(`/remote-browser/${encodeURIComponent(session.id)}/navigate`, {
+    method: "POST",
+    headers: runtimeHeaders(session),
+    body: JSON.stringify({ path }),
+  });
+}
+
+export async function closeRemoteBrowser(session: RemoteBrowserSession): Promise<void> {
+  await apiRequest(`/remote-browser/${encodeURIComponent(session.id)}`, {
+    method: "DELETE",
+    headers: runtimeHeaders(session),
+  });
+}
+
+export async function captureRemoteAuthentication(
+  id: string,
+  session: RemoteBrowserSession,
+): Promise<Showcase> {
+  return toShowcase(
+    await apiRequest<BackendShowcase>(
+      `/showcases/${encodeURIComponent(id)}/auth-browser/${encodeURIComponent(session.id)}/capture`,
+      { method: "POST", headers: runtimeHeaders(session) },
+    ),
+  );
 }

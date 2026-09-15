@@ -5,13 +5,14 @@ Showrun is a developer-focused platform for turning private web applications int
 ## Project structure
 
 - `frontend/` — Next.js 16 and React 19 showcase/dashboard UI
-- `backend/` — Fastify API, authentication bootstrap, route policy, secure proxy, and PostgreSQL persistence
+- `backend/` — Fastify API, controlled Chromium runtime, route policy, secure transport, and PostgreSQL persistence
 - `backend/migrations/` — PostgreSQL schema migrations
 
-The frontend uses the backend API for creator accounts, showcase configuration, authentication
-preparation, and proxied target rendering. Proxied target pages run on per-showcase origins such as
-`demo.localhost:4000` inside a sandboxed iframe;
-the backend enforces route policy and read-only methods.
+The frontend uses the backend API for creator accounts, showcase configuration, interactive browser
+login, and remote browser frames. Each visitor receives an isolated backend Chromium context. The
+visitor receives rendered JPEG frames and sends constrained pointer/keyboard events; target HTML,
+cookies, browser storage, and bearer tokens never enter the visitor's browser. The backend enforces
+configured top-level routes and read-only HTTP methods.
 
 ## Requirements
 
@@ -70,8 +71,8 @@ Start the backend (with nodemon) and frontend together from the repository root:
 npm run dev
 ```
 
-Open `http://localhost:3000`. The backend listens on `http://127.0.0.1:4000` by default.
-Chrome resolves `*.localhost` to loopback, so local preview origins need no purchased domain or hosts-file edits.
+Open `http://localhost:3000`. The backend listens on `http://127.0.0.1:4000` by default and launches
+managed Chromium lazily when a creator or visitor starts a controlled-browser session.
 
 ## Verification
 
@@ -94,9 +95,9 @@ npm run format:check
 - Only developer-configured routes may be exposed.
 - Showcase traffic is limited to read-only `GET` and `HEAD` requests.
 - Target selection and route authorization are enforced by the backend.
-- Every showcase and secondary upstream uses an isolated, server-derived preview hostname.
+- Every active visitor receives an isolated browser context protected by a random capability token.
 - Credentials and captured sessions are encrypted before persistence.
-- Browser storage receives only a session-specific synthetic bridge token; real values remain server-side and are substituted only in dependency-specific headers observed by the private scan.
+- Captured cookies and browser storage remain encrypted server-side and are restored only into isolated Chromium contexts.
 - Target requests are protected against SSRF and isolated from visitor-supplied authentication headers.
 - Upstream response headers are reduced to a functional allowlist before they cross the public boundary.
 

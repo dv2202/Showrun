@@ -75,6 +75,14 @@ export class AuthenticationService {
     return (await this.activeMaterial(showcaseId)) !== null;
   }
 
+  async saveCapturedMaterial(showcaseId: string, material: SessionMaterial): Promise<void> {
+    const aggregate = await this.repository.getShowcaseById(showcaseId);
+    if (!aggregate) throw new AppError('NOT_FOUND', 'Showcase not found', 404);
+    const expiresAt = new Date(Date.now() + this.sessionTtlSeconds * 1000);
+    await this.repository.saveSession(showcaseId, this.encryption.encrypt(material), expiresAt);
+    await this.repository.updateShowcase(showcaseId, { state: 'ACTIVE', lastErrorCode: null });
+  }
+
   async reauthenticate(showcaseId: string): Promise<void> {
     await this.repository.deleteSession(showcaseId);
     return this.prepare(showcaseId, true);

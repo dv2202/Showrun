@@ -1,4 +1,4 @@
-export type AuthMethod = "token" | "password" | "manual";
+export type AuthMethod = "token" | "password" | "browser";
 export type ShowcaseStatus = "active" | "needs_attention" | "draft";
 export type ShowcaseMode = "selected_routes" | "full_application";
 
@@ -89,13 +89,33 @@ export interface CreateShowcaseInput {
   name: string;
   description: string;
   targetUrl: string;
-  credentials: {
+  credentials?: {
     username: string;
     password: string;
   };
-  login: ShowcaseLoginConfiguration;
+  login?: ShowcaseLoginConfiguration;
   mode: ShowcaseMode;
   routes: ShowcaseRoute[];
+}
+
+export interface RemoteBrowserSession {
+  id: string;
+  token: string;
+  viewport: { width: number; height: number };
+  currentPath: string;
+}
+
+export type RemoteBrowserInput =
+  | { type: "click"; x: number; y: number; button: "left" | "middle" | "right"; clickCount: number }
+  | { type: "move"; x: number; y: number }
+  | { type: "wheel"; deltaX: number; deltaY: number }
+  | { type: "key"; key: string }
+  | { type: "text"; text: string };
+
+export interface RemoteBrowserFrame {
+  url: string;
+  currentPath: string;
+  blockedRequests: number;
 }
 
 export interface UpdateShowcaseInput {

@@ -15,6 +15,10 @@ import {
   type DependencyScanner,
 } from '../browser/playwright-bootstrapper.js';
 import {
+  PlaywrightRemoteBrowserRuntime,
+  type RemoteBrowserRuntime,
+} from '../browser/remote-browser-runtime.js';
+import {
   AuthenticationProviderRegistry,
   ManualSessionProvider,
   PasswordAuthProvider,
@@ -36,7 +40,13 @@ import {
   dependencyApprovalsSchema,
   idParamsSchema,
   proxyParamsSchema,
+  remoteBrowserAuthSessionParamsSchema,
+  remoteBrowserInputSchema,
+  remoteBrowserNavigateSchema,
+  remoteBrowserSessionParamsSchema,
   slugParamsSchema,
+  startAuthenticationBrowserSchema,
+  startViewerBrowserSchema,
   updateShowcaseSchema,
 } from './schemas.js';
 import { creatorSessionToken, registerCreatorAuthRoutes } from './creator-auth-routes.js';
@@ -50,6 +60,7 @@ export interface BuildAppOptions {
   providers?: AuthenticationProvider[];
   dependencyScanner?: DependencyScanner;
   compatibilityChecker?: CompatibilityChecker;
+  remoteBrowserRuntime?: RemoteBrowserRuntime;
 }
 
 function sensitiveSessionValues(material: SessionMaterial): string[] {
@@ -59,6 +70,14 @@ function sensitiveSessionValues(material: SessionMaterial): string[] {
     ...(material.sessionOrigins ?? []).flatMap((origin) => origin.sessionStorage.map((item) => item.value)),
     ...Object.values(material.headers ?? {}),
   ].filter((value) => value.length >= 8);
+}
+
+function remoteBrowserToken(request: FastifyRequest): string {
+  const value = request.headers['x-showrun-runtime-token'];
+  if (typeof value !== 'string' || value.length < 20 || value.length > 200) {
+    throw new AppError('NOT_FOUND', 'Remote browser session not found', 404);
+  }
+  return value;
 }
 
 export async function buildApp(options: BuildAppOptions): Promise<FastifyInstance> {
@@ -84,6 +103,14 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
     http,
     config.PLAYWRIGHT_HEADLESS === 'true',
     config.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH,
+  );
+  const remoteBrowser = options.remoteBrowserRuntime ?? new PlaywrightRemoteBrowserRuntime(
+    policy,
+    http,
+    config.PLAYWRIGHT_HEADLESS === 'true',
+    config.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH,
+    config.REMOTE_BROWSER_MAX_SESSIONS,
+    config.REMOTE_BROWSER_IDLE_TTL_SECONDS * 1000,
   );
   const dependencyScanner = options.dependencyScanner ?? browser;
   const compatibilityChecker = options.compatibilityChecker ?? browser;
@@ -122,7 +149,10 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
     new URL(config.FRONTEND_URL).origin,
     new SessionBridge(config.ENCRYPTION_KEY),
   );
-  app.addHook('onClose', async () => repository.close());
+  app.addHook('onClose', async () => {
+    await remoteBrowser.close();
+    await repository.close();
+  });
 
   app.setErrorHandler(async (error, request, reply) => {
     let appError: AppError;
@@ -137,13 +167,22 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
     });
   });
 
-  registerPreviewGateway(app, {
-    repository,
-    authentication,
-    proxy,
-    origins: previewOrigins,
-    frontendOrigin: new URL(config.FRONTEND_URL).origin,
-  });
+  if (config.SHOWCASE_LEGACY_PATH_PROXY === 'true') {
+    registerPreviewGateway(app, {
+      repository,
+      authentication,
+      proxy,
+      origins: previewOrigins,
+      frontendOrigin: new URL(config.FRONTEND_URL).origin,
+    });
+  } else {
+    app.addHook('onRequest', async (request, reply) => {
+      const host = Array.isArray(request.headers.host) ? request.headers.host[0] : request.headers.host;
+      if (previewOrigins.ownsHost(host)) {
+        return reply.code(404).send({ error: { code: 'NOT_FOUND', message: 'Showcase not found' } });
+      }
+    });
+  }
 
   await registerCreatorAuthRoutes(app, {
     config,
@@ -176,7 +215,9 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
     });
     admin.patch('/api/showcases/:id', async (request) => {
       const { id } = idParamsSchema.parse(request.params);
-      return showcases.update(id, updateShowcaseSchema.parse(request.body), creatorId(request));
+      const result = await showcases.update(id, updateShowcaseSchema.parse(request.body), creatorId(request));
+      await remoteBrowser.closeShowcase(id);
+      return result;
     });
     admin.post('/api/showcases/:id/scan-dependencies', {
       config: { rateLimit: { max: 6, timeWindow: '1 minute' } },
@@ -245,6 +286,7 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
     admin.delete('/api/showcases/:id', async (request, reply) => {
       const { id } = idParamsSchema.parse(request.params);
       await showcases.delete(id, creatorId(request));
+      await remoteBrowser.closeShowcase(id);
       return reply.code(204).send();
     });
     admin.post('/api/showcases/:id/prepare', async (request) => {
@@ -265,6 +307,28 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
       await authentication.reauthenticate(id);
       return showcases.get(id, creatorId(request));
     });
+    admin.post('/api/showcases/:id/auth-browser', {
+      config: { rateLimit: { max: 6, timeWindow: '1 minute' } },
+    }, async (request) => {
+      const { id } = idParamsSchema.parse(request.params);
+      const input = startAuthenticationBrowserSchema.parse(request.body ?? {});
+      const showcase = await showcases.get(id, creatorId(request));
+      return remoteBrowser.startAuthentication({
+        showcaseId: id,
+        targetUrl: showcase.targetUrl,
+        ...(input.initialUrl ? { initialUrl: input.initialUrl } : {}),
+        viewport: input.viewport,
+      });
+    });
+    admin.post('/api/showcases/:id/auth-browser/:sessionId/capture', async (request) => {
+      const { id, sessionId } = remoteBrowserAuthSessionParamsSchema.parse(request.params);
+      await showcases.get(id, creatorId(request));
+      const token = remoteBrowserToken(request);
+      const material = await remoteBrowser.captureAuthentication(sessionId, token, id);
+      await authentication.saveCapturedMaterial(id, material);
+      await remoteBrowser.closeSession(sessionId, token);
+      return showcases.get(id, creatorId(request));
+    });
   });
 
   const statusHandler = async (request: FastifyRequest) => {
@@ -281,6 +345,69 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
   };
   app.get('/api/showcases/:slug/status', statusHandler);
   app.get('/showcase/:slug/status', statusHandler);
+
+  app.post('/api/showcases/:slug/remote-browser', {
+    config: { rateLimit: { max: 12, timeWindow: '1 minute' } },
+  }, async (request, reply) => {
+    const { slug } = slugParamsSchema.parse(request.params);
+    const input = startViewerBrowserSchema.parse(request.body);
+    const aggregate = await repository.getShowcaseBySlug(slug);
+    if (!aggregate) throw new AppError('NOT_FOUND', 'Showcase not found', 404);
+    const material = await authentication.activeMaterial(aggregate.showcase.id);
+    if (!material) {
+      throw new AppError('AUTHENTICATION_EXPIRED', 'Showcase authentication is required', 401);
+    }
+    const handle = await remoteBrowser.startViewer({
+      showcaseId: aggregate.showcase.id,
+      targetUrl: aggregate.showcase.targetUrl,
+      routes: aggregate.showcase.routes,
+      initialPath: input.path,
+      material,
+      viewport: input.viewport,
+    });
+    await repository.recordVisit(aggregate.showcase.id, 200);
+    return reply.code(201).send(handle);
+  });
+
+  app.get('/api/remote-browser/:sessionId/frame', {
+    config: { rateLimit: { max: 600, timeWindow: '1 minute' } },
+  }, async (request, reply) => {
+    const { sessionId } = remoteBrowserSessionParamsSchema.parse(request.params);
+    const frame = await remoteBrowser.frame(sessionId, remoteBrowserToken(request));
+    return reply
+      .headers({
+        'cache-control': 'private, no-store',
+        pragma: 'no-cache',
+        'x-showrun-current-path': encodeURIComponent(frame.currentPath),
+        'x-showrun-blocked-requests': String(frame.blockedRequests),
+      })
+      .type('image/jpeg')
+      .send(frame.body);
+  });
+
+  app.post('/api/remote-browser/:sessionId/input', {
+    config: { rateLimit: { max: 1200, timeWindow: '1 minute' } },
+  }, async (request, reply) => {
+    const { sessionId } = remoteBrowserSessionParamsSchema.parse(request.params);
+    await remoteBrowser.input(
+      sessionId,
+      remoteBrowserToken(request),
+      remoteBrowserInputSchema.parse(request.body),
+    );
+    return reply.code(204).send();
+  });
+
+  app.post('/api/remote-browser/:sessionId/navigate', async (request) => {
+    const { sessionId } = remoteBrowserSessionParamsSchema.parse(request.params);
+    const { path } = remoteBrowserNavigateSchema.parse(request.body);
+    return { path: await remoteBrowser.navigate(sessionId, remoteBrowserToken(request), path) };
+  });
+
+  app.delete('/api/remote-browser/:sessionId', async (request, reply) => {
+    const { sessionId } = remoteBrowserSessionParamsSchema.parse(request.params);
+    await remoteBrowser.closeSession(sessionId, remoteBrowserToken(request));
+    return reply.code(204).send();
+  });
 
   const proxyHandler = async (request: FastifyRequest, reply: FastifyReply) => {
     if (config.SHOWCASE_LEGACY_PATH_PROXY !== 'true') {

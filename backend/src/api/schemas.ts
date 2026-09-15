@@ -97,6 +97,51 @@ export const dependencyApprovalsSchema = z.object({
 export const slugParamsSchema = z.object({ slug: z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/).max(80) });
 export const proxyParamsSchema = slugParamsSchema.extend({ '*': z.string().default('') });
 
+export const remoteBrowserSessionParamsSchema = z.object({
+  sessionId: z.string().regex(/^[A-Za-z0-9_-]{20,80}$/),
+});
+
+export const remoteBrowserAuthSessionParamsSchema = idParamsSchema.extend({
+  sessionId: z.string().regex(/^[A-Za-z0-9_-]{20,80}$/),
+});
+
+const remoteViewportSchema = z.object({
+  width: z.number().int().min(800).max(1920).default(1440),
+  height: z.number().int().min(500).max(1200).default(900),
+}).default({ width: 1440, height: 900 });
+
+export const startViewerBrowserSchema = z.object({
+  path: z.string().startsWith('/').max(500),
+  viewport: remoteViewportSchema,
+});
+
+export const startAuthenticationBrowserSchema = z.object({
+  initialUrl: z.string().url().optional(),
+  viewport: remoteViewportSchema,
+});
+
+export const remoteBrowserNavigateSchema = z.object({
+  path: z.string().startsWith('/').max(500),
+});
+
+export const remoteBrowserInputSchema = z.discriminatedUnion('type', [
+  z.object({
+    type: z.literal('click'),
+    x: z.number().min(0).max(1920),
+    y: z.number().min(0).max(1200),
+    button: z.enum(['left', 'middle', 'right']).default('left'),
+    clickCount: z.number().int().min(1).max(3).default(1),
+  }),
+  z.object({ type: z.literal('move'), x: z.number().min(0).max(1920), y: z.number().min(0).max(1200) }),
+  z.object({
+    type: z.literal('wheel'),
+    deltaX: z.number().min(-5000).max(5000),
+    deltaY: z.number().min(-5000).max(5000),
+  }),
+  z.object({ type: z.literal('key'), key: z.string().min(1).max(30) }),
+  z.object({ type: z.literal('text'), text: z.string().min(1).max(2000) }),
+]);
+
 export const creatorRegistrationSchema = z.object({
   name: z.string().trim().min(2).max(100),
   email: z.string().trim().email().max(254),

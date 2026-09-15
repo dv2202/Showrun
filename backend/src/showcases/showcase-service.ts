@@ -80,7 +80,7 @@ export function creatorShowcase(
     dependencies: showcase.dependencies,
     state: showcase.state,
     lastErrorCode: showcase.lastErrorCode,
-    authenticationConfigured: authentication !== null,
+    authenticationConfigured: authentication !== null || showcase.state === 'ACTIVE',
     authenticationProvider: authentication?.provider ?? null,
     authenticationConfig: editableAuthenticationConfig(authentication),
     createdAt: showcase.createdAt,

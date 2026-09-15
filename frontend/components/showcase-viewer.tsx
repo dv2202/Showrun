@@ -1,12 +1,19 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "next/navigation";
 import { Brand } from "@/components/shell";
+import { RemoteBrowser } from "@/components/remote-browser";
 import { Icon, type IconName } from "@/components/ui";
-import type { PrepareState, Showcase, ShowcaseRoute } from "@/lib/types";
-import { prepareShowcase } from "@/services/showcases";
+import type { PrepareState, RemoteBrowserSession, Showcase, ShowcaseRoute } from "@/lib/types";
+import { ApiError } from "@/services/api";
+import {
+  closeRemoteBrowser,
+  navigateRemoteBrowser,
+  prepareShowcase,
+  startViewerBrowser,
+} from "@/services/showcases";
 
 const routeIcons: IconName[] = ["grid", "stack", "pulse", "settings"];
 
@@ -84,10 +91,12 @@ function ShowcaseChrome({
   showcase,
   activeRoute,
   children,
+  onRouteSelect,
 }: {
   showcase: Showcase;
   activeRoute?: ShowcaseRoute;
   children: React.ReactNode;
+  onRouteSelect?: (route: ShowcaseRoute) => void;
 }) {
   return (
     <div className="flex h-screen min-h-[620px] flex-col overflow-hidden bg-[#eceeeb]">
@@ -131,7 +140,25 @@ function ShowcaseChrome({
             </p>
             {showcase.routes.map((route, index) => {
               const selected = route.id === activeRoute?.id;
-              return (
+              return onRouteSelect ? (
+                <button
+                  aria-current={selected ? "page" : undefined}
+                  className={`flex items-center gap-3 px-3 py-2.5 text-xs transition ${
+                    selected
+                      ? "bg-white/10 font-semibold text-white"
+                      : "text-zinc-400 hover:bg-white/5 hover:text-white"
+                  }`}
+                  key={route.id}
+                  onClick={() => onRouteSelect(route)}
+                  type="button"
+                >
+                  <Icon
+                    className={`h-4 w-4 ${selected ? "text-signal" : "text-zinc-600"}`}
+                    name={routeIcons[index % routeIcons.length]}
+                  />
+                  <span className="truncate">{route.title}</span>
+                </button>
+              ) : (
                 <Link
                   aria-current={selected ? "page" : undefined}
                   className={`flex items-center gap-3 px-3 py-2.5 text-xs transition ${
@@ -166,7 +193,17 @@ function ShowcaseChrome({
           >
             {showcase.routes.map((route) => {
               const selected = route.id === activeRoute?.id;
-              return (
+              return onRouteSelect ? (
+                <button
+                  aria-current={selected ? "page" : undefined}
+                  className={`shrink-0 px-3 py-2 text-[10px] font-medium ${selected ? "bg-signal text-black" : "text-zinc-400"}`}
+                  key={route.id}
+                  onClick={() => onRouteSelect(route)}
+                  type="button"
+                >
+                  {route.title}
+                </button>
+              ) : (
                 <Link
                   aria-current={selected ? "page" : undefined}
                   className={`shrink-0 px-3 py-2 text-[10px] font-medium ${selected ? "bg-signal text-black" : "text-zinc-400"}`}
@@ -193,17 +230,23 @@ function ShowcaseChrome({
   );
 }
 
-function TargetApplication({ showcase, route }: { showcase: Showcase; route: ShowcaseRoute }) {
-  const source = `${showcase.publicUrl.replace(/\/$/, "")}${route.path}`;
-
+function TargetApplication({
+  session,
+  onError,
+  onPathChange,
+  onSessionLost,
+}: {
+  session: RemoteBrowserSession;
+  onError: (message: string) => void;
+  onPathChange: (path: string) => void;
+  onSessionLost: () => void;
+}) {
   return (
-    <iframe
-      className="h-full min-h-[520px] w-full border-0 bg-white"
-      key={source}
-      referrerPolicy="no-referrer"
-      sandbox="allow-scripts allow-same-origin"
-      src={source}
-      title={`${showcase.name} — ${route.title}`}
+    <RemoteBrowser
+      onError={onError}
+      onPathChange={onPathChange}
+      onSessionLost={onSessionLost}
+      session={session}
     />
   );
 }
@@ -234,13 +277,7 @@ function RouteLoading({ showcase, route }: { showcase: Showcase; route?: Showcas
   );
 }
 
-function FullPageError({
-  kind,
-  owner,
-}: {
-  kind: "expired" | "target_unavailable" | "error";
-  owner: boolean;
-}) {
+function FullPageError({ kind }: { kind: "expired" | "target_unavailable" | "error" }) {
   const content =
     kind === "expired"
       ? {
@@ -280,21 +317,10 @@ function FullPageError({
           <div className="mt-7 border-l-2 border-zinc-200 pl-4">
             <p className="text-xs leading-5 text-zinc-600">
               {kind === "expired"
-                ? owner
-                  ? "Refresh the owner session to make this showcase available again."
-                  : "Please ask the project owner to refresh this showcase."
+                ? "Please ask the project owner to refresh this showcase."
                 : "No credentials or internal application details were exposed."}
             </p>
           </div>
-          {kind === "expired" && owner && (
-            <Link
-              className="mt-8 inline-flex h-10 items-center gap-2 bg-ink px-4 text-xs font-semibold text-white"
-              href="/auth/setup"
-            >
-              <Icon name="key" />
-              Re-authenticate
-            </Link>
-          )}
         </div>
       </div>
     </div>
@@ -306,7 +332,11 @@ export function ShowcaseViewer() {
   const [result, setResult] = useState<PrepareState>();
   const [phase, setPhase] = useState(0);
   const [routeLoading, setRouteLoading] = useState(false);
+  const [browserSession, setBrowserSession] = useState<RemoteBrowserSession>();
+  const [activeRoute, setActiveRoute] = useState<ShowcaseRoute>();
+  const [runtimeError, setRuntimeError] = useState<string>();
   const hasLoaded = useRef(false);
+  const reconnecting = useRef(false);
   const requestedPath = useMemo(
     () => (params.route?.length ? `/${params.route.join("/")}` : undefined),
     [params.route],
@@ -326,11 +356,26 @@ export function ShowcaseViewer() {
     Promise.all([
       request,
       new Promise((resolve) => window.setTimeout(resolve, isRouteChange ? 520 : 1150)),
-    ]).then(([prepared]) => {
-      if (!cancelled) {
-        setResult(prepared);
-        setRouteLoading(false);
-        hasLoaded.current = true;
+    ]).then(async ([prepared]) => {
+      let session: RemoteBrowserSession | undefined;
+      try {
+        if (prepared.state === "ready") {
+          session = await startViewerBrowser(prepared.showcase.slug, prepared.activeRoute.path);
+        }
+        if (!cancelled) {
+          setResult(prepared);
+          setBrowserSession(session);
+          setActiveRoute(prepared.state === "ready" ? prepared.activeRoute : undefined);
+          setRouteLoading(false);
+          hasLoaded.current = true;
+        } else if (session) {
+          await closeRemoteBrowser(session).catch(() => undefined);
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setRuntimeError(error instanceof Error ? error.message : "Remote browser unavailable.");
+          setResult({ state: "target_unavailable", projectName: "Showcase" });
+        }
       }
     });
     return () => {
@@ -339,17 +384,36 @@ export function ShowcaseViewer() {
     };
   }, [params.slug, requestedPath]);
 
+  const reconnectBrowser = useCallback(() => {
+    if (reconnecting.current || !result || result.state !== "ready" || !activeRoute) return;
+    reconnecting.current = true;
+    setBrowserSession(undefined);
+    setRouteLoading(true);
+    setRuntimeError("The browser session ended. Reconnecting…");
+    void startViewerBrowser(result.showcase.slug, activeRoute.path)
+      .then((session) => {
+        setBrowserSession(session);
+        setRuntimeError(undefined);
+      })
+      .catch(() => {
+        setResult({
+          state: "target_unavailable",
+          projectName: result.showcase.name,
+        });
+      })
+      .finally(() => {
+        reconnecting.current = false;
+        setRouteLoading(false);
+      });
+  }, [activeRoute, result]);
+
   if (!result) return <PreparingScreen phase={phase} />;
-  if (routeLoading && result.state === "ready") {
-    const nextRoute = result.showcase.routes.find((route) => route.path === requestedPath);
-    return <RouteLoading route={nextRoute} showcase={result.showcase} />;
-  }
   if (
     result.state === "expired" ||
     result.state === "target_unavailable" ||
     result.state === "error"
   )
-    return <FullPageError kind={result.state} owner={false} />;
+    return <FullPageError kind={result.state} />;
   if (result.state === "route_unavailable")
     return result.showcase ? (
       <ShowcaseChrome showcase={result.showcase}>
@@ -372,21 +436,65 @@ export function ShowcaseViewer() {
         </div>
       </ShowcaseChrome>
     ) : (
-      <FullPageError kind="error" owner={false} />
+      <FullPageError kind="error" />
     );
+  if (!browserSession || !activeRoute)
+    return <RouteLoading route={activeRoute} showcase={result.showcase} />;
+  const selectRoute = async (route: ShowcaseRoute) => {
+    if (route.id === activeRoute.id) return;
+    setRouteLoading(true);
+    try {
+      await navigateRemoteBrowser(browserSession, route.path);
+      setActiveRoute(route);
+    } catch (error) {
+      if (error instanceof ApiError && (error.status === 404 || error.status === 410)) {
+        reconnectBrowser();
+        return;
+      }
+      setRuntimeError(error instanceof Error ? error.message : "The route could not be opened.");
+    } finally {
+      setRouteLoading(false);
+    }
+  };
   return (
-    <ShowcaseChrome activeRoute={result.activeRoute} showcase={result.showcase}>
+    <ShowcaseChrome
+      activeRoute={activeRoute}
+      onRouteSelect={(route) => void selectRoute(route)}
+      showcase={result.showcase}
+    >
       <div className="shrink-0 border-b border-black/10 bg-white px-5 py-3 sm:px-7">
         <div className="flex items-baseline gap-3">
-          <h1 className="text-sm font-semibold">{result.activeRoute.title}</h1>
-          <span className="font-mono text-[9px] text-zinc-400">{result.activeRoute.path}</span>
+          <h1 className="text-sm font-semibold">{activeRoute.title}</h1>
+          <span className="font-mono text-[9px] text-zinc-400">{activeRoute.path}</span>
         </div>
         <p className="mt-1 max-w-3xl text-[11px] leading-5 text-zinc-500">
-          {result.activeRoute.description}
+          {activeRoute.description}
         </p>
       </div>
-      <div className="min-h-0 flex-1 overflow-auto">
-        <TargetApplication route={result.activeRoute} showcase={result.showcase} />
+      <div className="relative min-h-0 flex-1 overflow-auto">
+        {routeLoading && (
+          <div className="absolute inset-x-0 top-0 z-20 flex h-9 items-center gap-2 bg-ink/90 px-4 font-mono text-[9px] uppercase tracking-wide text-white">
+            <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-signal" />
+            Loading {activeRoute.title}
+          </div>
+        )}
+        {runtimeError && (
+          <div className="border-b border-amber-200 bg-amber-50 px-4 py-2 text-[10px] text-amber-900">
+            {runtimeError}
+          </div>
+        )}
+        <TargetApplication
+          onError={setRuntimeError}
+          onPathChange={(path) => {
+            const route = result.showcase.routes.find(
+              (candidate) =>
+                path === candidate.path || path.startsWith(`${candidate.path.replace(/\/$/, "")}/`),
+            );
+            if (route) setActiveRoute(route);
+          }}
+          onSessionLost={reconnectBrowser}
+          session={browserSession}
+        />
       </div>
     </ShowcaseChrome>
   );
