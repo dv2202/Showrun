@@ -3,6 +3,7 @@ import type {
   AuthenticationRuntimeInput,
   RemoteBrowserInput,
   RemoteBrowserRuntime,
+  RemoteBrowserFrame,
   ViewerRuntimeInput,
 } from '../src/browser/remote-browser-runtime.js';
 import { AppError } from '../src/errors.js';
@@ -17,10 +18,24 @@ class FixedRemoteBrowserRuntime implements RemoteBrowserRuntime {
   viewerInput?: ViewerRuntimeInput;
   authenticationInput?: AuthenticationRuntimeInput;
   inputs: RemoteBrowserInput[] = [];
+  inputGate?: Promise<void>;
   navigatedPath?: string;
   capturedShowcaseId?: string;
   closedSessions: string[] = [];
   closed = false;
+  streamedFrames?: (frame: RemoteBrowserFrame) => void;
+  streamClosed = 0;
+  streamEnded?: () => void;
+
+  async screencast(id: string, token: string, onFrame: (frame: RemoteBrowserFrame) => void, onClosed: () => void) {
+    this.assertSession(id, token);
+    this.streamedFrames = onFrame;
+    this.streamEnded = onClosed;
+    return {
+      close: async () => { this.streamClosed += 1; },
+      status: () => ({ currentPath: '/dashboard', blockedRequests: 2 }),
+    };
+  }
 
   async startViewer(input: ViewerRuntimeInput) {
     this.viewerInput = input;
@@ -39,6 +54,7 @@ class FixedRemoteBrowserRuntime implements RemoteBrowserRuntime {
 
   async input(id: string, token: string, input: RemoteBrowserInput) {
     this.assertSession(id, token);
+    await this.inputGate;
     this.inputs.push(input);
   }
 

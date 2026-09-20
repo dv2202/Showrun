@@ -51,6 +51,7 @@ import {
 } from './schemas.js';
 import { creatorSessionToken, registerCreatorAuthRoutes } from './creator-auth-routes.js';
 import { registerPreviewGateway } from './preview-gateway.js';
+import { registerRemoteBrowserStream } from './remote-browser-stream.js';
 
 export interface BuildAppOptions {
   config: AppConfig;
@@ -384,6 +385,8 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
       .type('image/jpeg')
       .send(frame.body);
   });
+
+  registerRemoteBrowserStream(app, remoteBrowser, new URL(config.FRONTEND_URL).origin);
 
   app.post('/api/remote-browser/:sessionId/input', {
     config: { rateLimit: { max: 1200, timeWindow: '1 minute' } },

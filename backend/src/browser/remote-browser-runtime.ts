@@ -37,6 +37,11 @@ export interface RemoteBrowserFrame {
   blockedRequests: number;
 }
 
+export interface RemoteBrowserStream {
+  close(): Promise<void>;
+  status(): { currentPath: string; blockedRequests: number };
+}
+
 export interface ViewerRuntimeInput {
   showcaseId: string;
   targetUrl: string;
@@ -57,6 +62,10 @@ export interface RemoteBrowserRuntime {
   startViewer(input: ViewerRuntimeInput): Promise<RemoteBrowserSessionHandle>;
   startAuthentication(input: AuthenticationRuntimeInput): Promise<RemoteBrowserSessionHandle>;
   frame(id: string, token: string): Promise<RemoteBrowserFrame>;
+  screencast(
+    id: string, token: string, onFrame: (frame: RemoteBrowserFrame) => void,
+    onClosed: () => void,
+  ): Promise<RemoteBrowserStream>;
   input(id: string, token: string, input: RemoteBrowserInput): Promise<void>;
   navigate(id: string, token: string, path: string): Promise<string>;
   captureAuthentication(id: string, token: string, showcaseId: string): Promise<SessionMaterial>;
@@ -78,6 +87,8 @@ interface RuntimeSession {
   currentPath: string;
   blockedRequests: number;
   lastAccessedAt: number;
+  stream?: RemoteBrowserStream;
+  streamStarting?: Promise<RemoteBrowserStream>;
 }
 
 function tokenHash(token: string): Buffer {
@@ -250,6 +261,109 @@ export class PlaywrightRemoteBrowserRuntime implements RemoteBrowserRuntime {
     }
   }
 
+  async screencast(
+    id: string, token: string, onFrame: (frame: RemoteBrowserFrame) => void,
+    onClosed: () => void,
+  ): Promise<RemoteBrowserStream> {
+    const session = this.session(id, token);
+    const previousStart = session.streamStarting;
+    const starting = (async () => {
+      await previousStart?.catch(() => undefined);
+      this.session(id, token);
+      return this.startScreencast(session, id, token, onFrame, onClosed);
+    })();
+    session.streamStarting = starting;
+    try {
+      return await starting;
+    } finally {
+      if (session.streamStarting === starting) session.streamStarting = undefined;
+    }
+  }
+
+  private async startScreencast(
+    session: RuntimeSession, id: string, token: string,
+    onFrame: (frame: RemoteBrowserFrame) => void, onClosed: () => void,
+  ): Promise<RemoteBrowserStream> {
+    // One transport owns the page's screencast. Reconnecting never creates a second Chrome.
+    await session.stream?.close();
+    const cdp = await session.context.newCDPSession(session.page);
+    let stopped = false;
+    let closing: Promise<void> | undefined;
+    let notifiedClosed = false;
+    let lastFrameAt = 0;
+    let latestFrame: string | undefined;
+    let frameTimer: NodeJS.Timeout | undefined;
+    const notifyClosed = () => {
+      if (notifiedClosed) return;
+      notifiedClosed = true;
+      onClosed();
+    };
+    const onPageClosed = () => {
+      notifyClosed();
+      void stream.close();
+    };
+    const deliverLatestFrame = () => {
+      frameTimer = undefined;
+      if (stopped || !latestFrame) return;
+      const data = latestFrame;
+      latestFrame = undefined;
+      lastFrameAt = Date.now();
+      onFrame({
+        body: Buffer.from(data, 'base64'),
+        currentPath: session.currentPath,
+        blockedRequests: session.blockedRequests,
+      });
+    };
+    const onScreencastFrame = (event: { data: string; sessionId: number }) => {
+      // Always acknowledge Chrome, including frames dropped by our rate/backpressure guard.
+      void cdp.send('Page.screencastFrameAck', { sessionId: event.sessionId }).catch(() => {
+        if (!stopped) onPageClosed();
+      });
+      if (stopped) return;
+      latestFrame = event.data;
+      const delay = Math.max(0, 33 - (Date.now() - lastFrameAt));
+      if (!delay) deliverLatestFrame();
+      else if (!frameTimer) frameTimer = setTimeout(deliverLatestFrame, delay);
+    };
+    const stream: RemoteBrowserStream = {
+      status: () => {
+        const current = this.session(id, token);
+        return { currentPath: current.currentPath, blockedRequests: current.blockedRequests };
+      },
+      close: () => {
+        closing ??= (async () => {
+          stopped = true;
+          notifyClosed();
+          cdp.off('Page.screencastFrame', onScreencastFrame);
+          session.page.off('close', onPageClosed);
+          if (frameTimer) clearTimeout(frameTimer);
+          latestFrame = undefined;
+          // Keep the reference and return the same promise until stop finishes. Otherwise
+          // an old Page.stopScreencast can race with a newly started connection.
+          await cdp.send('Page.stopScreencast').catch(() => undefined);
+          await cdp.detach().catch(() => undefined);
+          if (session.stream === stream) session.stream = undefined;
+        })();
+        return closing;
+      },
+    };
+    session.stream = stream;
+    cdp.on('Page.screencastFrame', onScreencastFrame);
+    session.page.on('close', onPageClosed);
+    try {
+      await cdp.send('Page.startScreencast', {
+        format: 'jpeg', quality: 80,
+        maxWidth: session.viewport.width, maxHeight: session.viewport.height,
+        everyNthFrame: 1,
+      });
+      return stream;
+    } catch (error) {
+      notifiedClosed = true; // Setup failure is recoverable via HTTP, not a lost browser context.
+      await stream.close();
+      throw new AppError('TARGET_UNAVAILABLE', 'Live browser streaming is unavailable', 503, { cause: error });
+    }
+  }
+
   async navigate(id: string, token: string, path: string): Promise<string> {
     const session = this.session(id, token);
     if (session.mode !== 'viewer') {
@@ -292,6 +406,7 @@ export class PlaywrightRemoteBrowserRuntime implements RemoteBrowserRuntime {
   async closeSession(id: string, token: string): Promise<void> {
     const session = this.session(id, token);
     this.sessions.delete(id);
+    await session.stream?.close();
     await session.context.close().catch(() => undefined);
   }
 
@@ -299,6 +414,7 @@ export class PlaywrightRemoteBrowserRuntime implements RemoteBrowserRuntime {
     const sessions = [...this.sessions.values()].filter((session) => session.showcaseId === showcaseId);
     await Promise.all(sessions.map(async (session) => {
       this.sessions.delete(session.id);
+      await session.stream?.close();
       await session.context.close().catch(() => undefined);
     }));
   }
@@ -307,7 +423,10 @@ export class PlaywrightRemoteBrowserRuntime implements RemoteBrowserRuntime {
     clearInterval(this.cleanupTimer);
     const sessions = [...this.sessions.values()];
     this.sessions.clear();
-    await Promise.all(sessions.map((session) => session.context.close().catch(() => undefined)));
+    await Promise.all(sessions.map(async (session) => {
+      await session.stream?.close();
+      await session.context.close().catch(() => undefined);
+    }));
     const browser = await this.browserPromise?.catch(() => undefined);
     await browser?.close().catch(() => undefined);
     this.browserPromise = undefined;
@@ -480,6 +599,7 @@ export class PlaywrightRemoteBrowserRuntime implements RemoteBrowserRuntime {
     const expired = [...this.sessions.values()].filter((session) => session.lastAccessedAt < cutoff);
     await Promise.all(expired.map(async (session) => {
       this.sessions.delete(session.id);
+      await session.stream?.close();
       await session.context.close().catch(() => undefined);
     }));
   }
