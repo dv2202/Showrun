@@ -323,6 +323,17 @@ const runtimeHeaders = (session: RemoteBrowserSession) => ({
   "x-showrun-runtime-token": session.token,
 });
 
+export async function negotiateRemoteBrowser(
+  session: RemoteBrowserSession,
+  offer: RTCSessionDescriptionInit,
+): Promise<RTCSessionDescriptionInit> {
+  return apiRequest(`/remote-browser/${encodeURIComponent(session.id)}/webrtc`, {
+    method: "POST",
+    headers: runtimeHeaders(session),
+    body: JSON.stringify(offer),
+  });
+}
+
 export async function startViewerBrowser(
   slug: string,
   path: string,
@@ -369,7 +380,7 @@ export async function getRemoteBrowserFrame(
   const blob = await response.blob();
   const encodedPath = response.headers.get("x-showrun-current-path") ?? "";
   return {
-    url: URL.createObjectURL(blob),
+    blob,
     currentPath: encodedPath ? decodeURIComponent(encodedPath) : session.currentPath,
     blockedRequests: Number(response.headers.get("x-showrun-blocked-requests") ?? "0"),
   };

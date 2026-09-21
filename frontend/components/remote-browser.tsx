@@ -7,11 +7,14 @@ import { ApiError } from "@/services/api";
 import {
   closeRemoteBrowser,
   getRemoteBrowserFrame,
+  negotiateRemoteBrowser,
   sendRemoteBrowserInput,
 } from "@/services/showcases";
 
 const pendingSessionCloses = new Map<string, number>();
 const SESSION_CLOSE_GRACE_MS = 1_000;
+
+type FrameMetadata = { currentPath: string; blockedRequests: number };
 
 const forwardedKeys = new Set([
   "ArrowDown",
@@ -32,6 +35,7 @@ const forwardedKeys = new Set([
 export function RemoteBrowser({
   session,
   interactive = true,
+  mode = "viewer",
   closeOnUnmount = true,
   onError,
   onPathChange,
@@ -39,20 +43,28 @@ export function RemoteBrowser({
 }: {
   session: RemoteBrowserSession;
   interactive?: boolean;
+  mode?: "viewer" | "authentication";
   closeOnUnmount?: boolean;
   onError?: (message: string) => void;
   onPathChange?: (path: string) => void;
   onSessionLost?: () => void;
 }) {
-  const [frameUrl, setFrameUrl] = useState<string>();
+  const [frameReady, setFrameReady] = useState(false);
+  const [transport, setTransport] = useState("Connecting live stream…");
+  const [currentPath, setCurrentPath] = useState(session.currentPath);
+  const [fps, setFps] = useState(0);
   const [blockedRequests, setBlockedRequests] = useState(0);
   const [connected, setConnected] = useState(true);
-  const frameUrlRef = useRef<string | undefined>(undefined);
+  const [connectionAttempt, setConnectionAttempt] = useState(0);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const channelRef = useRef<RTCDataChannel | undefined>(undefined);
+  const inputQueueRef = useRef(Promise.resolve());
   const moveAtRef = useRef(0);
   const onErrorRef = useRef(onError);
   const onPathChangeRef = useRef(onPathChange);
   const onSessionLostRef = useRef(onSessionLost);
   const sessionLostRef = useRef(false);
+  const mountedRef = useRef(false);
 
   useEffect(() => {
     onErrorRef.current = onError;
@@ -61,6 +73,7 @@ export function RemoteBrowser({
   }, [onError, onPathChange, onSessionLost]);
 
   const reportRemoteError = useCallback((error: unknown) => {
+    if (!mountedRef.current) return;
     setConnected(false);
     if (error instanceof ApiError && (error.status === 404 || error.status === 410)) {
       if (!sessionLostRef.current) {
@@ -79,22 +92,59 @@ export function RemoteBrowser({
       pendingSessionCloses.delete(session.id);
     }
     sessionLostRef.current = false;
+    mountedRef.current = true;
     let active = true;
+    let fallbackStarted = false;
+    let sessionFailed = false;
+    let frames = 0;
     let timer: number | undefined;
+    let retryTimer: number | undefined;
+    let latestLiveFrame: { blob: Blob; metadata: FrameMetadata } | undefined;
+    let decodingLiveFrame = false;
+    let ready = false;
+    let lastStatus: { currentPath: string; blockedRequests: number } | undefined;
+    const statsStartedAt = performance.now();
+    let lastStatsAt = statsStartedAt;
+    const stats = window.setInterval(() => {
+      const now = performance.now();
+      if (active) setFps(Math.round((frames * 1_000) / (now - lastStatsAt)));
+      lastStatsAt = now;
+      frames = 0;
+    }, 1_000);
+    const updateStatus = (status: { currentPath: string; blockedRequests: number }) => {
+      if (lastStatus?.currentPath !== status.currentPath) {
+        setCurrentPath(status.currentPath);
+        onPathChangeRef.current?.(status.currentPath);
+      }
+      if (lastStatus?.blockedRequests !== status.blockedRequests) {
+        setBlockedRequests(status.blockedRequests);
+      }
+      lastStatus = { currentPath: status.currentPath, blockedRequests: status.blockedRequests };
+    };
+    const drawFrame = async (blob: Blob, live = false) => {
+      const bitmap = await createImageBitmap(blob);
+      try {
+        if (!active || (live && fallbackStarted)) return;
+        const context = canvasRef.current?.getContext("2d", { alpha: false });
+        if (!context) throw new Error("Browser frame rendering is unavailable.");
+        context.drawImage(bitmap, 0, 0, session.viewport.width, session.viewport.height);
+        frames += 1;
+        if (!ready) {
+          ready = true;
+          setFrameReady(true);
+          setConnected(true);
+        }
+      } finally {
+        bitmap.close();
+      }
+    };
     const poll = async () => {
       try {
         const frame = await getRemoteBrowserFrame(session);
-        if (!active) {
-          URL.revokeObjectURL(frame.url);
-          return;
-        }
-        const previous = frameUrlRef.current;
-        frameUrlRef.current = frame.url;
-        setFrameUrl(frame.url);
-        setBlockedRequests(frame.blockedRequests);
-        onPathChangeRef.current?.(frame.currentPath);
-        setConnected(true);
-        if (previous) URL.revokeObjectURL(previous);
+        if (!active) return;
+        await drawFrame(frame.blob);
+        if (!active) return;
+        updateStatus(frame);
       } catch (error) {
         if (!active) return;
         reportRemoteError(error);
@@ -102,12 +152,121 @@ export function RemoteBrowser({
       }
       timer = window.setTimeout(poll, 250);
     };
-    void poll();
+    const peer = new RTCPeerConnection({
+      iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
+    });
+    const channel = peer.createDataChannel("showrun", { ordered: true });
+    channel.binaryType = "arraybuffer";
+    channelRef.current = channel;
+    const fallback = () => {
+      if (!active || fallbackStarted || sessionFailed) return;
+      fallbackStarted = true;
+      if (connectionTimer) window.clearTimeout(connectionTimer);
+      if (channelRef.current === channel) channelRef.current = undefined;
+      channel.close();
+      peer.close();
+      latestLiveFrame = undefined;
+      setTransport("HTTP fallback · reduced frame rate");
+      void poll();
+      retryTimer = window.setTimeout(() => {
+        if (active) setConnectionAttempt((attempt) => attempt + 1);
+      }, 10_000);
+    };
+    const connectionTimer = window.setTimeout(fallback, 7_000);
+    const renderLiveFrames = async () => {
+      if (decodingLiveFrame) return;
+      decodingLiveFrame = true;
+      try {
+        // One decode plus one latest frame: never build a stale render backlog.
+        while (active && !fallbackStarted && !sessionFailed && latestLiveFrame) {
+          const frame = latestLiveFrame;
+          latestLiveFrame = undefined;
+          await drawFrame(frame.blob, true);
+          if (!active || fallbackStarted || sessionFailed) return;
+          updateStatus(frame.metadata);
+        }
+      } catch {
+        fallback();
+      } finally {
+        decodingLiveFrame = false;
+      }
+    };
+    channel.onopen = () => {
+      if (!active || fallbackStarted) return;
+      if (connectionTimer) window.clearTimeout(connectionTimer);
+      setTransport("WebRTC · live browser");
+      setConnected(true);
+    };
+    channel.onmessage = (event: MessageEvent<ArrayBuffer>) => {
+      if (!active || fallbackStarted || sessionFailed || !(event.data instanceof ArrayBuffer)) return;
+      if (event.data.byteLength < 4) return;
+      const packet = new DataView(event.data);
+      const metadataLength = packet.getUint32(0);
+      if (metadataLength > 8_192 || 4 + metadataLength > event.data.byteLength) return;
+      let frameMetadata: FrameMetadata;
+      try {
+        frameMetadata = JSON.parse(
+          new TextDecoder().decode(new Uint8Array(event.data, 4, metadataLength)),
+        ) as FrameMetadata;
+      } catch {
+        fallback();
+        return;
+      }
+      const jpeg = new Blob([event.data.slice(4 + metadataLength)], { type: "image/jpeg" });
+      latestLiveFrame = { blob: jpeg, metadata: frameMetadata };
+      void renderLiveFrames();
+    };
+    channel.onerror = fallback;
+    channel.onclose = () => {
+      if (active && !fallbackStarted && !sessionFailed) fallback();
+    };
+    peer.onconnectionstatechange = () => {
+      if (peer.connectionState === "connected") setTransport("WebRTC · live browser");
+      if (peer.connectionState === "failed" || peer.connectionState === "disconnected") fallback();
+    };
+    void (async () => {
+      try {
+        const offer = await peer.createOffer();
+        await peer.setLocalDescription(offer);
+        await new Promise<void>((resolve, reject) => {
+          const timeout = window.setTimeout(() => {
+            peer.removeEventListener("icegatheringstatechange", gathered);
+            reject(new Error("Peer candidates could not be gathered."));
+          }, 5_000);
+          const gathered = () => {
+            if (peer.iceGatheringState !== "complete") return;
+            window.clearTimeout(timeout);
+            peer.removeEventListener("icegatheringstatechange", gathered);
+            resolve();
+          };
+          peer.addEventListener("icegatheringstatechange", gathered);
+          gathered();
+        });
+        if (!active || fallbackStarted || !peer.localDescription) return;
+        const answer = await negotiateRemoteBrowser(session, peer.localDescription);
+        if (!active || fallbackStarted) return;
+        await peer.setRemoteDescription(answer);
+      } catch (error) {
+        if (!active) return;
+        if (error instanceof ApiError && (error.status === 404 || error.status === 410)) {
+          sessionFailed = true;
+          reportRemoteError(error);
+        } else {
+          fallback();
+        }
+      }
+    })();
     return () => {
       active = false;
+      latestLiveFrame = undefined;
+      mountedRef.current = false;
       if (timer) window.clearTimeout(timer);
-      if (frameUrlRef.current) URL.revokeObjectURL(frameUrlRef.current);
-      frameUrlRef.current = undefined;
+      if (retryTimer) window.clearTimeout(retryTimer);
+      if (connectionTimer) window.clearTimeout(connectionTimer);
+      window.clearInterval(stats);
+      if (channelRef.current === channel) channelRef.current = undefined;
+      channel.close();
+      peer.close();
       if (closeOnUnmount) {
         const closeTimer = window.setTimeout(() => {
           pendingSessionCloses.delete(session.id);
@@ -116,16 +275,29 @@ export function RemoteBrowser({
         pendingSessionCloses.set(session.id, closeTimer);
       }
     };
-  }, [closeOnUnmount, reportRemoteError, session]);
+  }, [closeOnUnmount, connectionAttempt, reportRemoteError, session]);
 
   const dispatch = useCallback(
     (input: RemoteBrowserInput) => {
-      if (!interactive) return;
-      void sendRemoteBrowserInput(session, input).catch((error) => {
-        reportRemoteError(error);
-      });
+      if (!interactive || !connected) return;
+      // Preserve click and typing order while switching between WebRTC and HTTP.
+      inputQueueRef.current = inputQueueRef.current
+        .then(async () => {
+          if (!mountedRef.current || sessionLostRef.current) return;
+          const channel = channelRef.current;
+          if (channel?.readyState === "open") {
+            if (channel.bufferedAmount > 65_536) {
+              onErrorRef.current?.("The browser connection is busy. Please wait a moment.");
+              return;
+            }
+            channel.send(JSON.stringify({ type: "input", input }));
+          } else {
+            await sendRemoteBrowserInput(session, input);
+          }
+        })
+        .catch(reportRemoteError);
     },
-    [interactive, reportRemoteError, session],
+    [connected, interactive, reportRemoteError, session],
   );
 
   const coordinates = (element: HTMLElement, clientX: number, clientY: number) => {
@@ -155,13 +327,39 @@ export function RemoteBrowser({
           <span
             className={`h-1.5 w-1.5 rounded-full ${connected ? "bg-emerald-400" : "bg-red-400"}`}
           />
-          {connected ? "Controlled browser connected" : "Controlled browser disconnected"}
+          {connected ? transport : "Controlled browser disconnected"}
         </span>
-        <span>
+        <span className="truncate px-3 text-zinc-400">{currentPath}</span>
+        <span className="shrink-0">
+          {frameReady && (
+            <span
+              className="mr-3"
+              title="Frames rendered per second. Unchanged pages send fewer frames."
+            >
+              {fps > 0 ? `${fps} FPS` : "Idle · no screen changes"}
+            </span>
+          )}
           {blockedRequests > 0
             ? `${blockedRequests} unsafe request${blockedRequests === 1 ? "" : "s"} blocked`
-            : "Read-only network guard active"}
+            : mode === "authentication"
+              ? "Login browser · authentication requests allowed"
+              : "Read-only network guard active"}
         </span>
+        <button
+          className="ml-3 shrink-0 rounded border border-white/15 px-2 py-0.5 text-zinc-300 hover:bg-white/10"
+          onClick={() => {
+            setConnected(true);
+            setTransport("Reconnecting live stream…");
+            setConnectionAttempt((attempt) => attempt + 1);
+          }}
+          type="button"
+        >
+          Reconnect
+        </button>
+      </div>
+      <div className="shrink-0 border-b border-white/10 px-3 py-1.5 text-[10px] text-zinc-400">
+        Live remote browser — click to focus, then type, paste or scroll normally.
+        {mode === "authentication" && " When login is complete, save the session above."}
       </div>
       <div className="grid min-h-0 flex-1 place-items-center overflow-auto bg-[#272a27] p-2 sm:p-3">
         <div
@@ -223,16 +421,14 @@ export function RemoteBrowser({
           style={{ aspectRatio: `${session.viewport.width} / ${session.viewport.height}` }}
           tabIndex={interactive ? 0 : -1}
         >
-          {frameUrl ? (
-            // This is a server-rendered browser frame, not a public target URL.
-            // eslint-disable-next-line @next/next/no-img-element
-            <img
-              alt="Remote application viewport"
-              className="h-full w-full select-none object-contain"
-              draggable={false}
-              src={frameUrl}
-            />
-          ) : (
+          <canvas
+            aria-label="Remote application viewport"
+            className="h-full w-full select-none object-contain"
+            height={session.viewport.height}
+            ref={canvasRef}
+            width={session.viewport.width}
+          />
+          {!frameReady && (
             <div className="absolute inset-0 grid place-items-center bg-white text-zinc-500">
               <span className="flex items-center gap-2 text-xs">
                 <Icon className="h-4 w-4 animate-pulse" name="globe" /> Loading browser frame…
