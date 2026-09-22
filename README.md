@@ -8,11 +8,13 @@ Showrun is a developer-focused platform for turning private web applications int
 - `backend/` — Fastify API, controlled Chromium runtime, route policy, secure transport, and PostgreSQL persistence
 - `backend/migrations/` — PostgreSQL schema migrations
 
-The frontend uses the backend API for creator accounts, showcase configuration, interactive browser
-login, and remote browser frames. Each visitor receives an isolated backend Chromium context. The
-visitor receives rendered JPEG frames and sends constrained pointer/keyboard events; target HTML,
-cookies, browser storage, and bearer tokens never enter the visitor's browser. The backend enforces
-configured top-level routes and read-only HTTP methods.
+The frontend uses the backend API for creator accounts, showcase configuration and interactive browser
+login. Each visitor receives an isolated backend Chromium context. Chrome's CDP screencast sends JPEG
+frames over a WebRTC data channel, with pointer and keyboard input returning on that channel. A
+same-origin HTTP request exchanges the WebRTC offer and answer; HTTP frame/input endpoints remain a
+fallback when peer-to-peer networking is unavailable. Target HTML, cookies, browser storage, and
+bearer tokens never enter the visitor's browser. The backend enforces configured top-level routes and
+read-only HTTP methods.
 
 ## Requirements
 
@@ -73,6 +75,12 @@ npm run dev
 
 Open `http://localhost:3000`. The backend listens on `http://127.0.0.1:4000` by default and launches
 managed Chromium lazily when a creator or visitor starts a controlled-browser session.
+
+The WebRTC offer/answer exchange uses the existing same-origin `/backend-api` Next.js rewrite. In
+production, allow UDP peer traffic through your network and set the backend's `FRONTEND_URL` to the
+exact public frontend origin (including scheme/port). Run one backend replica or use sticky routing
+for session creation, negotiation, navigation and capture requests. If direct UDP is unavailable,
+the viewer falls back to HTTP polling. See the backend streaming guide.
 
 ## Verification
 
