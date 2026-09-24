@@ -57,7 +57,8 @@ export function RemoteBrowser({
   const [connected, setConnected] = useState(true);
   const [connectionAttempt, setConnectionAttempt] = useState(0);
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const channelRef = useRef<RTCDataChannel | undefined>(undefined);
+  const inputChannelRef = useRef<RTCDataChannel | undefined>(undefined);
+  const frameChannelRef = useRef<RTCDataChannel | undefined>(undefined);
   const inputQueueRef = useRef(Promise.resolve());
   const moveAtRef = useRef(0);
   const onErrorRef = useRef(onError);
@@ -156,16 +157,23 @@ export function RemoteBrowser({
     const peer = new RTCPeerConnection({
       iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
     });
-    const channel = peer.createDataChannel("showrun", { ordered: true });
-    channel.binaryType = "arraybuffer";
-    channelRef.current = channel;
+    const inputChannel = peer.createDataChannel("showrun-input", { ordered: true });
+    const frameChannel = peer.createDataChannel("showrun-frames", {
+      ordered: false,
+      maxRetransmits: 0,
+    });
+    frameChannel.binaryType = "arraybuffer";
+    inputChannelRef.current = inputChannel;
+    frameChannelRef.current = frameChannel;
     const fallback = () => {
       if (!active || fallbackStarted || sessionFailed) return;
       fallbackStarted = true;
       if (connectionTimer) window.clearTimeout(connectionTimer);
       if (disconnectTimer) window.clearTimeout(disconnectTimer);
-      if (channelRef.current === channel) channelRef.current = undefined;
-      channel.close();
+      if (inputChannelRef.current === inputChannel) inputChannelRef.current = undefined;
+      if (frameChannelRef.current === frameChannel) frameChannelRef.current = undefined;
+      inputChannel.close();
+      frameChannel.close();
       peer.close();
       latestLiveFrame = undefined;
       setTransport("HTTP fallback · reduced frame rate");
@@ -193,13 +201,13 @@ export function RemoteBrowser({
         decodingLiveFrame = false;
       }
     };
-    channel.onopen = () => {
+    frameChannel.onopen = () => {
       if (!active || fallbackStarted) return;
       if (connectionTimer) window.clearTimeout(connectionTimer);
       setTransport("WebRTC · live browser");
       setConnected(true);
     };
-    channel.onmessage = (event: MessageEvent<ArrayBuffer>) => {
+    frameChannel.onmessage = (event: MessageEvent<ArrayBuffer>) => {
       if (!active || fallbackStarted || sessionFailed || !(event.data instanceof ArrayBuffer)) return;
       if (event.data.byteLength < 4) return;
       const packet = new DataView(event.data);
@@ -218,8 +226,12 @@ export function RemoteBrowser({
       latestLiveFrame = { blob: jpeg, metadata: frameMetadata };
       void renderLiveFrames();
     };
-    channel.onerror = fallback;
-    channel.onclose = () => {
+    frameChannel.onerror = fallback;
+    frameChannel.onclose = () => {
+      if (active && !fallbackStarted && !sessionFailed) fallback();
+    };
+    inputChannel.onerror = fallback;
+    inputChannel.onclose = () => {
       if (active && !fallbackStarted && !sessionFailed) fallback();
     };
     peer.onconnectionstatechange = () => {
@@ -275,8 +287,10 @@ export function RemoteBrowser({
       if (disconnectTimer) window.clearTimeout(disconnectTimer);
       if (connectionTimer) window.clearTimeout(connectionTimer);
       window.clearInterval(stats);
-      if (channelRef.current === channel) channelRef.current = undefined;
-      channel.close();
+      if (inputChannelRef.current === inputChannel) inputChannelRef.current = undefined;
+      if (frameChannelRef.current === frameChannel) frameChannelRef.current = undefined;
+      inputChannel.close();
+      frameChannel.close();
       peer.close();
       if (closeOnUnmount) {
         const closeTimer = window.setTimeout(() => {
@@ -295,7 +309,7 @@ export function RemoteBrowser({
       inputQueueRef.current = inputQueueRef.current
         .then(async () => {
           if (!mountedRef.current || sessionLostRef.current) return;
-          const channel = channelRef.current;
+          const channel = inputChannelRef.current;
           if (channel?.readyState === "open") {
             if (channel.bufferedAmount > 65_536) {
               onErrorRef.current?.("The browser connection is busy. Please wait a moment.");

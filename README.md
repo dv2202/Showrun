@@ -10,11 +10,11 @@ Showrun is a developer-focused platform for turning private web applications int
 
 The frontend uses the backend API for creator accounts, showcase configuration and interactive browser
 login. Each visitor receives an isolated backend Chromium context. Chrome's CDP screencast sends JPEG
-frames over a WebRTC data channel, with pointer and keyboard input returning on that channel. A
-same-origin HTTP request exchanges the WebRTC offer and answer; HTTP frame/input endpoints remain a
-fallback when peer-to-peer networking is unavailable. Target HTML, cookies, browser storage, and
-bearer tokens never enter the visitor's browser. The backend enforces configured top-level routes and
-read-only HTTP methods.
+frames over a low-latency WebRTC data channel, while pointer and keyboard input use a separate reliable
+channel. A same-origin HTTP request exchanges the WebRTC offer and answer; HTTP frame/input endpoints
+remain a fallback when peer-to-peer networking is unavailable. Target HTML, cookies, browser storage,
+and bearer tokens never enter the visitor's browser. The backend enforces configured top-level routes
+and read-only HTTP methods.
 
 ## Requirements
 

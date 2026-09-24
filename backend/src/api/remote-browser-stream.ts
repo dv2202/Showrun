@@ -41,7 +41,8 @@ export function registerRemoteBrowserStream(
       iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
       maxMessageSize: 16 * 1024 * 1024,
     });
-    let channel: ReturnType<RTCPeerConnection['createDataChannel']> | undefined;
+    let inputChannel: ReturnType<RTCPeerConnection['createDataChannel']> | undefined;
+    let frameChannel: ReturnType<RTCPeerConnection['createDataChannel']> | undefined;
     let stream: RemoteBrowserStream | undefined;
     let stopped = false;
     let latestFrame: RemoteBrowserFrame | undefined;
@@ -63,8 +64,8 @@ export function registerRemoteBrowserStream(
       void peer.close();
     };
     const flushFrame = () => {
-      if (stopped || !latestFrame || channel?.readyState !== 'open') return;
-      if (channel.bufferedAmount > FRAME_BUFFER_LIMIT) {
+      if (stopped || !latestFrame || frameChannel?.readyState !== 'open') return;
+      if (frameChannel.bufferedAmount > FRAME_BUFFER_LIMIT) {
         drainTimer ??= setTimeout(() => { drainTimer = undefined; flushFrame(); }, 15);
         drainTimer.unref();
         return;
@@ -72,42 +73,46 @@ export function registerRemoteBrowserStream(
       const frame = latestFrame;
       latestFrame = undefined;
       try {
-        channel.send(packFrame(frame));
+        frameChannel.send(packFrame(frame));
       } catch {
         cleanup();
       }
     };
-    const acceptChannel = (dataChannel: NonNullable<typeof channel>) => {
-      if (channel) {
+    const acceptChannel = (dataChannel: NonNullable<typeof inputChannel>) => {
+      if (dataChannel.label === 'showrun-input' && !inputChannel) {
+        inputChannel = dataChannel;
+        inputChannel.onmessage = ({ data }) => {
+          if (stopped || !stream) return;
+          if (Date.now() - inputWindowStarted >= 1_000) {
+            inputWindowStarted = Date.now();
+            inputCount = 0;
+          }
+          if (++inputCount > 120 || Buffer.byteLength(String(data)) > 8_192) {
+            cleanup();
+            return;
+          }
+          let message: z.infer<typeof inputMessageSchema>;
+          try {
+            message = inputMessageSchema.parse(JSON.parse(String(data)));
+            stream.status();
+          } catch {
+            cleanup();
+            return;
+          }
+          inputOperations = inputOperations.then(async () => {
+            if (!stopped) await runtime.input(sessionId, token, message.input);
+          }).catch(() => cleanup());
+        };
+        inputChannel.onerror = cleanup;
+        inputChannel.onclose = cleanup;
+      } else if (dataChannel.label === 'showrun-frames' && !frameChannel) {
+        frameChannel = dataChannel;
+        frameChannel.onerror = cleanup;
+        frameChannel.onclose = cleanup;
+        frameChannel.onopen = () => flushFrame();
+      } else {
         dataChannel.close();
-        return;
       }
-      channel = dataChannel;
-      channel.onmessage = ({ data }) => {
-        if (stopped || !stream) return;
-        if (Date.now() - inputWindowStarted >= 1_000) {
-          inputWindowStarted = Date.now();
-          inputCount = 0;
-        }
-        if (++inputCount > 120 || Buffer.byteLength(String(data)) > 8_192) {
-          cleanup();
-          return;
-        }
-        let message: z.infer<typeof inputMessageSchema>;
-        try {
-          message = inputMessageSchema.parse(JSON.parse(String(data)));
-          stream.status();
-        } catch {
-          cleanup();
-          return;
-        }
-        inputOperations = inputOperations.then(async () => {
-          if (!stopped) await runtime.input(sessionId, token, message.input);
-        }).catch(() => cleanup());
-      };
-      channel.onerror = cleanup;
-      channel.onclose = cleanup;
-      channel.onopen = () => flushFrame();
     };
     peer.ondatachannel = ({ channel: incoming }) => acceptChannel(incoming);
     peer.onconnectionstatechange = () => {

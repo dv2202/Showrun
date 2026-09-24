@@ -84,11 +84,11 @@ is sent in a header and never placed in a URL or logged.
 Playwright opens an internal CDP session and starts `Page.startScreencast` with JPEG quality 80 at
 the configured viewport. Chrome emits frames when content changes; the runtime keeps the latest
 trailing update and caps delivery at about 30 FPS. Frames exist only transiently in memory. The client
-exchanges complete SDP offers and answers over same-origin HTTP, then carries JPEG frames and
-validated input over an ordered WebRTC data channel. One active decode and one latest pending frame
-keep slow clients from building a stale render backlog. The backend bounds queued frame data and
-drops older updates during congestion. This is not a video codec track: JPEG encoding and bandwidth
-remain dependent on Chrome, the network and client decoding.
+exchanges complete SDP offers and answers over same-origin HTTP, then carries JPEG frames over an
+unordered, no-retry WebRTC data channel and validated input over a separate reliable, ordered channel.
+Lost screenshots can be skipped so a fresh screen arrives promptly; one active decode and one latest
+pending frame prevent stale render backlogs. This is not a video codec track: JPEG encoding and
+bandwidth remain dependent on Chrome, the network and client decoding.
 
 - Use HTTPS at ingress and preserve the browser's `Origin` header. WebRTC data channels are DTLS
   encrypted; negotiation rejects cross-site or missing Origins and verifies the runtime capability.
