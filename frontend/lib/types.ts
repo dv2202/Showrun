@@ -113,7 +113,7 @@ export type RemoteBrowserInput =
   | { type: "text"; text: string };
 
 export interface RemoteBrowserFrame {
-  url: string;
+  blob: Blob;
   currentPath: string;
   blockedRequests: number;
 }
