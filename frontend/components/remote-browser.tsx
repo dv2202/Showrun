@@ -99,6 +99,7 @@ export function RemoteBrowser({
     let frames = 0;
     let timer: number | undefined;
     let retryTimer: number | undefined;
+    let disconnectTimer: number | undefined;
     let latestLiveFrame: { blob: Blob; metadata: FrameMetadata } | undefined;
     let decodingLiveFrame = false;
     let ready = false;
@@ -162,6 +163,7 @@ export function RemoteBrowser({
       if (!active || fallbackStarted || sessionFailed) return;
       fallbackStarted = true;
       if (connectionTimer) window.clearTimeout(connectionTimer);
+      if (disconnectTimer) window.clearTimeout(disconnectTimer);
       if (channelRef.current === channel) channelRef.current = undefined;
       channel.close();
       peer.close();
@@ -221,8 +223,16 @@ export function RemoteBrowser({
       if (active && !fallbackStarted && !sessionFailed) fallback();
     };
     peer.onconnectionstatechange = () => {
-      if (peer.connectionState === "connected") setTransport("WebRTC · live browser");
-      if (peer.connectionState === "failed" || peer.connectionState === "disconnected") fallback();
+      if (peer.connectionState === "connected") {
+        if (disconnectTimer) window.clearTimeout(disconnectTimer);
+        disconnectTimer = undefined;
+        setTransport("WebRTC · live browser");
+      } else if (peer.connectionState === "disconnected") {
+        // Brief network handoffs should not tear down a recovering peer.
+        disconnectTimer ??= window.setTimeout(fallback, 2_500);
+      } else if (peer.connectionState === "failed") {
+        fallback();
+      }
     };
     void (async () => {
       try {
@@ -262,6 +272,7 @@ export function RemoteBrowser({
       mountedRef.current = false;
       if (timer) window.clearTimeout(timer);
       if (retryTimer) window.clearTimeout(retryTimer);
+      if (disconnectTimer) window.clearTimeout(disconnectTimer);
       if (connectionTimer) window.clearTimeout(connectionTimer);
       window.clearInterval(stats);
       if (channelRef.current === channel) channelRef.current = undefined;
