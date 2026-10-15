@@ -116,8 +116,8 @@ function ShowcaseChrome({
           >
             <Icon className="h-3 w-3" name="shield" /> Read only
             <span className="pointer-events-none absolute right-0 top-8 z-50 hidden w-64 border border-black/10 bg-ink p-3 text-[10px] font-normal leading-4 text-white shadow-xl group-hover:block group-focus:block">
-              Application actions are disabled. Use the Showcase navigation to explore available
-              routes.
+              Write requests are blocked. Click, scroll and use safe controls normally, or use the
+              Showcase navigation to explore permitted routes.
             </span>
           </span>
         </div>
@@ -221,7 +221,7 @@ function ShowcaseChrome({
               <Icon className="h-3 w-3" name="shield" /> Read-only Showcase
             </span>
             <span className="hidden font-mono sm:block">
-              Navigate with the Showcase sidebar · Application actions disabled
+              Explore permitted routes · Write requests blocked
             </span>
           </footer>
         </div>
@@ -243,6 +243,7 @@ function TargetApplication({
 }) {
   return (
     <RemoteBrowser
+      key={session.id}
       onError={onError}
       onPathChange={onPathChange}
       onSessionLost={onSessionLost}

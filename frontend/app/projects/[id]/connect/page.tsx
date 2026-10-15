@@ -175,6 +175,8 @@ export default function ConnectShowcase() {
         <section className="h-[min(72vh,900px)] min-h-[560px] overflow-hidden border border-black/20 bg-[#151715]">
           {session ? (
             <RemoteBrowser
+              key={session.id}
+              mode="authentication"
               onError={setError}
               onSessionLost={() => {
                 setSession(undefined);

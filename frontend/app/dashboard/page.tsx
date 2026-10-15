@@ -6,11 +6,14 @@ import { DashboardShell } from "@/components/shell";
 import { useAuth } from "@/components/auth-provider";
 import { CopyButton, Icon, Skeleton, Status } from "@/components/ui";
 import type { Showcase } from "@/lib/types";
-import { getShowcases } from "@/services/showcases";
+import { deleteShowcase, getShowcases } from "@/services/showcases";
 
 export default function Dashboard() {
   const [projects, setProjects] = useState<Showcase[] | null>(null);
   const [loadError, setLoadError] = useState(false);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [deleteError, setDeleteError] = useState<string>();
+  const [deleteNotice, setDeleteNotice] = useState<string>();
   const { user } = useAuth();
 
   useEffect(() => {
@@ -18,6 +21,32 @@ export default function Dashboard() {
       .then(setProjects)
       .catch(() => setLoadError(true));
   }, []);
+
+  const removeShowcase = async (project: Showcase) => {
+    if (deletingId) return;
+    if (
+      !window.confirm(
+        `Delete "${project.name}"?\n\nThis permanently removes the showcase and its saved login state. Its public link will stop working. Your original application will not be deleted. This cannot be undone.`,
+      )
+    )
+      return;
+    setDeletingId(project.id);
+    setDeleteError(undefined);
+    setDeleteNotice(undefined);
+    try {
+      await deleteShowcase(project.id);
+      setProjects((current) => current?.filter((item) => item.id !== project.id) ?? current);
+      setDeleteNotice(`"${project.name}" was deleted.`);
+    } catch (error) {
+      setDeleteError(
+        error instanceof Error
+          ? error.message
+          : "The showcase could not be deleted. Please try again.",
+      );
+    } finally {
+      setDeletingId(null);
+    }
+  };
 
   const active = projects?.filter((project) => project.status === "active").length;
   const warnings = projects?.filter((project) => project.status === "needs_attention").length;
@@ -84,6 +113,23 @@ export default function Dashboard() {
             <p className="mt-1 text-xs text-zinc-500">Projects in this workspace</p>
           </div>
         </div>
+
+        {deleteError && (
+          <div
+            className="border-b border-red-200 bg-red-50 px-5 py-3 text-xs text-red-700 sm:px-6"
+            role="alert"
+          >
+            {deleteError}
+          </div>
+        )}
+        {deleteNotice && (
+          <div
+            className="border-b border-emerald-200 bg-emerald-50 px-5 py-3 text-xs text-emerald-700 sm:px-6"
+            role="status"
+          >
+            {deleteNotice}
+          </div>
+        )}
 
         {loadError ? (
           <div className="grid min-h-72 place-items-center p-8 text-center">
@@ -164,6 +210,23 @@ export default function Dashboard() {
                   >
                     <Icon name="chevron" />
                   </Link>
+                  <button
+                    aria-label={
+                      deletingId === project.id
+                        ? `Deleting ${project.name}`
+                        : `Delete ${project.name}`
+                    }
+                    className="grid h-9 w-9 place-items-center border border-red-200 bg-white text-red-600 transition hover:border-red-300 hover:bg-red-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-red-600 disabled:cursor-wait disabled:opacity-50"
+                    disabled={Boolean(deletingId)}
+                    onClick={() => void removeShowcase(project)}
+                    title={`Delete ${project.name}`}
+                    type="button"
+                  >
+                    <Icon
+                      className={deletingId === project.id ? "h-4 w-4 animate-pulse" : "h-4 w-4"}
+                      name={deletingId === project.id ? "pulse" : "trash"}
+                    />
+                  </button>
                 </div>
               </article>
             ))}

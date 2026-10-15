@@ -18,6 +18,7 @@ export type IconName =
   | "spark"
   | "stack"
   | "terminal"
+  | "trash"
   | "user"
   | "warning";
 
@@ -89,6 +90,11 @@ export function Icon({ name, className = "h-4 w-4" }: { name: IconName; classNam
       <>
         <path d="m5 7 4 4-4 4M12 17h7" />
         <rect x="2" y="3" width="20" height="18" rx="2" />
+      </>
+    ),
+    trash: (
+      <>
+        <path d="M3 6h18M9 6V4h6v2M5 6l1 14h12l1-14M10 10v6M14 10v6" />
       </>
     ),
     user: (

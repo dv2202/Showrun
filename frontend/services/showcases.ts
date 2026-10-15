@@ -167,6 +167,10 @@ export async function getShowcase(id: string): Promise<Showcase | undefined> {
   }
 }
 
+export async function deleteShowcase(id: string): Promise<void> {
+  await apiRequest(`/showcases/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+
 export async function createShowcase(input: CreateShowcaseInput): Promise<Showcase> {
   const authentication =
     input.login && input.credentials
